@@ -178,48 +178,111 @@ tests.push({ name: 'SWAP_REQUEST: create swap between A1 and A2', fn: async () =
   })
   assert(r.body.success === true, 'swap request created')
   assert(r.body.data.status === 'pending', 'status is pending')
-  globalThis.swapId = r.body.data.id
+  globalThis.swapId1 = r.body.data.id
+  globalThis.swap1FromStudent = a1.student_id
+  globalThis.swap1ToStudent = a2.student_id
+  globalThis.swap1FromSeat = a1.id
+  globalThis.swap1ToSeat = a2.id
 }})
 
-tests.push({ name: 'SWAP_APPROVE: approve swap as TA', fn: async () => {
-  const r = await req(`/api/swap-requests/${globalThis.swapId}/approve`, {
+tests.push({ name: 'TA_FORCE_APPROVE_FAIL: TA must be rejected, seats unchanged, data clean', fn: async () => {
+  const seatsBefore = await req(`/api/sessions/${globalThis.sessionId}/seats`)
+  const a1Before = seatsBefore.body.data.find(s => s.seat_number === 'A1')
+  const a2Before = seatsBefore.body.data.find(s => s.seat_number === 'A2')
+  const r = await req(`/api/swap-requests/${globalThis.swapId1}/approve`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ approverRole: 'ta', approvalNote: '同意调换' }),
+    body: JSON.stringify({ approverRole: 'ta', approvalNote: '助教强制审批' }),
   })
-  assert(r.body.success === true, 'swap approved')
-  assert(r.body.data.status === 'approved', 'status is approved')
-  assert(r.body.data.approval_role === 'ta', 'approval_role is ta')
-  assert(r.body.data.approval_note === '同意调换', 'approval_note stored')
+  assert(r.status === 403, 'TA approval returns 403 Forbidden')
+  assert(r.body.success === false, 'TA approval rejected (success=false)')
+  assert(r.body.error === 'TA_APPROVAL_FORBIDDEN', 'error code is TA_APPROVAL_FORBIDDEN')
+  assert(r.body.message.includes('原排座保持不变'), 'message mentions 原排座保持不变')
+  const seatsAfter = await req(`/api/sessions/${globalThis.sessionId}/seats`)
+  const a1After = seatsAfter.body.data.find(s => s.seat_number === 'A1')
+  const a2After = seatsAfter.body.data.find(s => s.seat_number === 'A2')
+  assert(a1After.student_id === a1Before.student_id, 'A1 student unchanged after TA rejection')
+  assert(a2After.student_id === a2Before.student_id, 'A2 student unchanged after TA rejection')
+  const swapAfter = await req(`/api/swap-requests?sessionId=${globalThis.sessionId}`)
+  const req1 = swapAfter.body.data.find(s => s.id === globalThis.swapId1)
+  assert(req1.status === 'rejected', 'swap request status is rejected')
+  assert(req1.approval_role === 'ta', 'approval_role recorded as ta')
+  assert(req1.approval_note === '助教无审批权限，需管理员审批', 'rejection note stored correctly')
+  const logs = await req(`/api/logs?sessionId=${globalThis.sessionId}`)
+  const taRejectLog = logs.body.data.find(l =>
+    l.operation_type === 'reject_swap' && l.operator_role === 'ta')
+  assert(taRejectLog, 'reject_swap log with ta role exists')
+  assert(taRejectLog.details.includes('助教强制审批被拒绝'), 'log message contains rejection reason')
+  console.log('✅ TA approval correctly rejected, seats unchanged, data clean')
 }})
 
-tests.push({ name: 'SWAP_RESULT: verify seats actually swapped', fn: async () => {
+tests.push({ name: 'SWAP_REQUEST: create 2nd swap for admin approval', fn: async () => {
+  const seats = await req(`/api/sessions/${globalThis.sessionId}/seats`)
+  const a1 = seats.body.data.find(s => s.seat_number === 'A1')
+  const a2 = seats.body.data.find(s => s.seat_number === 'A2')
+  const r = await req('/api/swap-requests', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionId: globalThis.sessionId,
+      fromStudentId: a1.student_id,
+      toStudentId: a2.student_id,
+      fromSeatId: a1.id,
+      toSeatId: a2.id,
+      reason: '视力不好需要靠前',
+    }),
+  })
+  assert(r.body.success === true, '2nd swap request created')
+  assert(r.body.data.status === 'pending', 'status is pending')
+  globalThis.swapId2 = r.body.data.id
+}})
+
+tests.push({ name: 'SWAP_APPROVE: approve swap as ADMIN (normal success path)', fn: async () => {
+  const r = await req(`/api/swap-requests/${globalThis.swapId2}/approve`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ approverRole: 'admin', approvalNote: '管理员批准调换' }),
+  })
+  assert(r.body.success === true, 'swap approved by admin')
+  assert(r.body.data.status === 'approved', 'status is approved')
+  assert(r.body.data.approval_role === 'admin', 'approval_role is admin')
+  assert(r.body.data.approval_note === '管理员批准调换', 'approval_note stored')
+}})
+
+tests.push({ name: 'SWAP_RESULT: verify seats actually swapped after admin approval', fn: async () => {
   const seats = await req(`/api/sessions/${globalThis.sessionId}/seats`)
   const a1 = seats.body.data.find(s => s.seat_number === 'A1')
   const a2 = seats.body.data.find(s => s.seat_number === 'A2')
   assert(a1.student_id === globalThis.students[1].id, 'A1 now has student2 (was student1)')
   assert(a2.student_id === globalThis.students[0].id, 'A2 now has student1 (was student2)')
-  console.log('✅ seats swapped correctly')
+  console.log('✅ seats swapped correctly after admin approval')
 }})
 
-tests.push({ name: 'SWAP_FORCE_FAIL: remove A1 assignment then try to approve another swap', fn: async () => {
+tests.push({ name: 'SEAT_CHANGED_FAIL: unassign seat then admin approve should fail', fn: async () => {
   const seats = await req(`/api/sessions/${globalThis.sessionId}/seats`)
-  const a1 = seats.body.data.find(s => s.seat_number === 'A1')
-  const a2 = seats.body.data.find(s => s.seat_number === 'A2')
   const b1 = seats.body.data.find(s => s.seat_number === 'B1')
+  const b2 = seats.body.data.find(s => s.seat_number === 'B2')
   const st3 = globalThis.students[2]
-  await req('/api/assignments', {
+  const st4 = globalThis.students[3]
+  const assignB1 = await req('/api/assignments', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sessionId: globalThis.sessionId, seatId: b1.id, studentId: st3.id }),
   })
+  assert(assignB1.body.success === true, 'B1 assigned to st3')
+  const assignB2 = await req('/api/assignments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId: globalThis.sessionId, seatId: b2.id, studentId: st4.id }),
+  })
+  assert(assignB2.body.success === true, 'B2 assigned to st4')
   const reqBody = {
     sessionId: globalThis.sessionId,
-    fromStudentId: a1.student_id,
-    toStudentId: st3.id,
-    fromSeatId: a1.id,
-    toSeatId: b1.id,
-    reason: '测试强制失败',
+    fromStudentId: st3.id,
+    toStudentId: st4.id,
+    fromSeatId: b1.id,
+    toSeatId: b2.id,
+    reason: '测试SEAT_CHANGED场景',
   }
   const create = await req('/api/swap-requests', {
     method: 'POST',
@@ -227,20 +290,20 @@ tests.push({ name: 'SWAP_FORCE_FAIL: remove A1 assignment then try to approve an
     body: JSON.stringify(reqBody),
   })
   const newSwapId = create.body.data.id
-  const a1Assignment = a1.assignment_id
-  await req(`/api/assignments/${a1Assignment}`, { method: 'DELETE' })
+  const b1Assignment = b1.assignment_id || assignB1.body.data.id
+  await req(`/api/assignments/${b1Assignment}`, { method: 'DELETE' })
   const r = await req(`/api/swap-requests/${newSwapId}/approve`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ approverRole: 'ta', approvalNote: '强制审批' }),
+    body: JSON.stringify({ approverRole: 'admin', approvalNote: '管理员审批但席位已变' }),
   })
   assert(r.status === 409, 'seat changed after unassign returns 409')
   assert(r.body.error === 'SEAT_CHANGED', 'error code SEAT_CHANGED')
   const seatsAfter = await req(`/api/sessions/${globalThis.sessionId}/seats`)
+  const b2After = seatsAfter.body.data.find(s => s.seat_number === 'B2')
+  assert(b2After.student_id === st4.id, 'B2 still has st4 (original assignment preserved)')
   const b1After = seatsAfter.body.data.find(s => s.seat_number === 'B1')
-  assert(b1After.student_id === st3.id, 'B1 still has student3 (original assignment preserved)')
-  const a1After = seatsAfter.body.data.find(s => s.seat_number === 'A1')
-  assert(a1After.status !== 'occupied' || a1After.student_id !== st3.id, 'A1 did not get student3 - original layout preserved')
+  assert(b1After.status !== 'occupied' || b1After.student_id !== st4.id, 'B1 did not get st4 - original layout preserved')
 }})
 
 tests.push({ name: 'DELETE_ROSTER: in-use roster should be blocked', fn: async () => {
@@ -275,9 +338,32 @@ tests.push({ name: 'OPERATION_LOGS: logs recorded for all mutations', fn: async 
   assert(types.includes('create_session'), 'create_session logged')
   assert(types.includes('assign_seat'), 'assign_seat logged')
   assert(types.includes('approve_swap'), 'approve_swap logged')
+  assert(types.includes('reject_swap'), 'reject_swap logged')
   assert(types.includes('update_attendance'), 'update_attendance logged')
-  const taApproved = r.body.data.find(l => l.operation_type === 'approve_swap')
-  assert(taApproved.operator_role === 'ta', 'TA approval recorded with correct role')
+  const adminApproved = r.body.data.find(l => l.operation_type === 'approve_swap')
+  assert(adminApproved.operator_role === 'admin', 'admin approval recorded with correct role')
+  const taRejected = r.body.data.find(l => l.operation_type === 'reject_swap' && l.operator_role === 'ta')
+  assert(taRejected, 'TA rejection recorded with correct role')
+}})
+
+tests.push({ name: 'USER_LINK_VERIFY: no false approved in swap list or exports', fn: async () => {
+  const swapList = await req(`/api/swap-requests?sessionId=${globalThis.sessionId}`)
+  const taRejected = swapList.body.data.find(s => s.id === globalThis.swapId1)
+  assert(taRejected.status === 'rejected', 'swap #1 status = rejected in list API')
+  assert(taRejected.status !== 'approved', 'swap #1 is NOT approved in list API')
+  assert(taRejected.approval_role === 'ta', 'swap #1 approval_role = ta in list API')
+  const adminApproved = swapList.body.data.find(s => s.id === globalThis.swapId2)
+  assert(adminApproved.status === 'approved', 'swap #2 status = approved in list API')
+  assert(adminApproved.approval_role === 'admin', 'swap #2 approval_role = admin in list API')
+  const seatsExport = await req(`/api/export/seats?sessionId=${globalThis.sessionId}`)
+  const a1Row = seatsExport.body.data.find(r => r.席位号 === 'A1')
+  const a2Row = seatsExport.body.data.find(r => r.席位号 === 'A2')
+  assert(a1Row.姓名 === '李娜', 'A1=李娜 after admin approval swap, not affected by TA rejection')
+  assert(a2Row.姓名 === '张伟', 'A2=张伟 after admin approval swap, not affected by TA rejection')
+  const attExport = await req(`/api/export/attendance?sessionId=${globalThis.sessionId}`)
+  const columns = Object.keys(attExport.body.data[0])
+  assert(!columns.includes('approval_role'), 'attendance export does not leak approval data')
+  console.log('✅ User link verification passed - no false approved state visible')
 }})
 
 tests.push({ name: 'SAMPLE_CSV: returns valid CSV', fn: async () => {

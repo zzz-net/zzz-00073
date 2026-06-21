@@ -77,6 +77,27 @@ router.put('/:id/approve', (req: Request, res: Response) => {
     return
   }
 
+  if (approverRole === 'ta') {
+    db.prepare(`
+      UPDATE swap_requests SET status = 'rejected', approval_role = 'ta',
+        approval_note = '助教无审批权限，需管理员审批',
+        processed_at = datetime('now', 'localtime') WHERE id = ?
+    `).run(id)
+    logOperation(
+      swapRequest.session_id,
+      'reject_swap',
+      'admin',
+      'ta',
+      `助教强制审批被拒绝: 学生${swapRequest.from_student_id} <-> 学生${swapRequest.to_student_id}`
+    )
+    res.status(403).json({
+      success: false,
+      error: 'TA_APPROVAL_FORBIDDEN',
+      message: '助教无审批调换权限，原排座保持不变',
+    })
+    return
+  }
+
   const fromAssignment = db.prepare(
     'SELECT * FROM assignments WHERE session_id = ? AND seat_id = ? AND student_id = ?'
   ).get(swapRequest.session_id, swapRequest.from_seat_id, swapRequest.from_student_id) as any
