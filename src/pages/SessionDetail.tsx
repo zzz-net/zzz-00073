@@ -190,6 +190,7 @@ export default function SessionDetail() {
       const note = approvalNote[id] || ''
       await approveSwapRequest(id, currentRole, note || undefined)
       toast('已批准调换', 'success')
+      loadData()
       loadTabData('swap')
     } catch (e: any) {
       toast(e.message, 'error')
@@ -201,6 +202,7 @@ export default function SessionDetail() {
       const note = approvalNote[id] || ''
       await rejectSwapRequest(id, currentRole, note || undefined)
       toast('已拒绝调换', 'success')
+      loadData()
       loadTabData('swap')
     } catch (e: any) {
       toast(e.message, 'error')

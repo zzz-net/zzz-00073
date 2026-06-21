@@ -374,6 +374,74 @@ tests.push({ name: 'SAMPLE_CSV: returns valid CSV', fn: async () => {
   assert(text.includes('张伟'), 'sample CSV has Chinese names')
 }})
 
+tests.push({ name: 'SAMPLE_FILENAME_MATCH: download filename matches page description', fn: async () => {
+  const res = await fetch(BASE + '/api/rosters/sample')
+  const disposition = res.headers.get('Content-Disposition') || ''
+  assert(disposition.length > 0, 'Content-Disposition header is present')
+  assert(disposition.includes('UTF-8'), 'filename uses UTF-8 encoding (RFC 5987)')
+  assert(disposition.includes('%E6%A0%B7%E4%BE%8B%E5%90%8D%E5%8D%95.csv'), 'filename is 样例名单.csv (URL-encoded)')
+  const decoded = decodeURIComponent(disposition.match(/UTF-8''(.+)/)?.[1] || '')
+  assert(decoded === '样例名单.csv', 'decoded filename is 样例名单.csv')
+  console.log('✅ Sample filename matches: 样例名单.csv')
+}})
+
+tests.push({ name: 'SEAT_REFRESH_AFTER_APPROVE: seat data fresh on re-enter (no stale cache)', fn: async () => {
+  const seatsFirst = await req(`/api/sessions/${globalThis.sessionId}/seats`)
+  const a1First = seatsFirst.body.data.find(s => s.seat_number === 'A1')
+  const a2First = seatsFirst.body.data.find(s => s.seat_number === 'A2')
+  assert(a1First.student_id === globalThis.students[1].id, 'first load: A1 has student2 (Li Na)')
+  assert(a2First.student_id === globalThis.students[0].id, 'first load: A2 has student1 (Zhang Wei)')
+  console.log('✅ First page load - seats match expected state')
+  const seatsSecond = await req(`/api/sessions/${globalThis.sessionId}/seats`)
+  const a1Second = seatsSecond.body.data.find(s => s.seat_number === 'A1')
+  const a2Second = seatsSecond.body.data.find(s => s.seat_number === 'A2')
+  assert(a1Second.student_id === a1First.student_id, 'second load: A1 matches first load - consistent')
+  assert(a2Second.student_id === a2First.student_id, 'second load: A2 matches first load - consistent')
+  const c1 = seatsSecond.body.data.find(s => s.seat_number === 'C1')
+  const st6 = globalThis.students[5]
+  const assignResp = await req('/api/assignments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId: globalThis.sessionId, seatId: c1.id, studentId: st6.id }),
+  })
+  assert(assignResp.body.success === true, 'assigned student6 to C1')
+  const seatsAfterAssign = await req(`/api/sessions/${globalThis.sessionId}/seats`)
+  const c1After = seatsAfterAssign.body.data.find(s => s.seat_number === 'C1')
+  assert(c1After.status === 'occupied', 'C1 is occupied after assignment')
+  assert(c1After.student_id === st6.id, 'C1 has student6 - data refreshed on next query')
+  const swapReq = await req('/api/swap-requests', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionId: globalThis.sessionId,
+      fromStudentId: a1Second.student_id,
+      toStudentId: st6.id,
+      fromSeatId: a1Second.id,
+      toSeatId: c1.id,
+      reason: '测试审批后刷新验证',
+    }),
+  })
+  assert(swapReq.body.success === true, 'swap request created between A1 and C1')
+  const swapId3 = swapReq.body.data.id
+  const seatsBeforeApprove = await req(`/api/sessions/${globalThis.sessionId}/seats`)
+  const a1BeforeAppr = seatsBeforeApprove.body.data.find(s => s.seat_number === 'A1')
+  const c1BeforeAppr = seatsBeforeApprove.body.data.find(s => s.seat_number === 'C1')
+  assert(a1BeforeAppr.student_id === globalThis.students[1].id, 'before approve: A1 still has Li Na')
+  assert(c1BeforeAppr.student_id === st6.id, 'before approve: C1 still has student6')
+  const approveResp = await req(`/api/swap-requests/${swapId3}/approve`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ approverRole: 'admin', approvalNote: '管理员批准' }),
+  })
+  assert(approveResp.body.success === true, 'swap approved by admin')
+  const seatsAfterApprove = await req(`/api/sessions/${globalThis.sessionId}/seats`)
+  const a1AfterAppr = seatsAfterApprove.body.data.find(s => s.seat_number === 'A1')
+  const c1AfterAppr = seatsAfterApprove.body.data.find(s => s.seat_number === 'C1')
+  assert(a1AfterAppr.student_id === st6.id, 'AFTER APPROVE: A1 now has student6 (swapped)')
+  assert(c1AfterAppr.student_id === globalThis.students[1].id, 'AFTER APPROVE: C1 now has Li Na (swapped)')
+  console.log('✅ Seat data immediately updated after approval - no stale data on re-query')
+}})
+
 async function main() {
   console.log('\n=== 实验排座系统 API 验证测试 ===\n')
   for (const t of tests) {

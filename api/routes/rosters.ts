@@ -118,7 +118,7 @@ router.get('/sample', (_req: Request, res: Response) => {
   const rows = names.map((n, i) => `2024${String(i + 1).padStart(3, '0')},${n},计算机1班,A组`)
   const csv = [header, ...rows].join('\n')
   res.setHeader('Content-Type', 'text/csv; charset=utf-8')
-  res.setHeader('Content-Disposition', 'attachment; filename=roster_sample.csv')
+  res.setHeader('Content-Disposition', 'attachment; filename*=UTF-8\'\'%E6%A0%B7%E4%BE%8B%E5%90%8D%E5%8D%95.csv')
   res.send('\uFEFF' + csv)
 })
 

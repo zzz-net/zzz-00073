@@ -135,6 +135,7 @@ router.get('/:id/seats', (req: Request, res: Response) => {
 
   const seats = db.prepare(`
     SELECT s.*,
+      CASE WHEN a.id IS NOT NULL THEN 'occupied' ELSE 'free' END as status,
       a.id as assignment_id,
       a.student_id,
       a.assigned_at,

@@ -83,7 +83,7 @@ export default function Roster() {
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = 'roster_sample.csv'
+      a.download = '样例名单.csv'
       a.click()
       URL.revokeObjectURL(url)
       toast('样例文件已下载', 'success')
