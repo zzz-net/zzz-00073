@@ -4,7 +4,8 @@ import {
   Grid3X3, ArrowLeftRight, ClipboardCheck, History,
   Calendar, Clock, Users, Link2, X, CheckCircle,
   XCircle, Clock4, UserMinus, ArrowRight,
-  FileEdit, Save, Play, Trash2, AlertTriangle, Sparkles
+  FileEdit, Save, Play, Trash2, AlertTriangle, Sparkles,
+  LayoutGrid, Download, RotateCcw
 } from 'lucide-react'
 import { useAppStore } from '@/stores/appStore'
 import {
@@ -14,10 +15,16 @@ import {
   fetchSwapRequests, approveSwapRequest, rejectSwapRequest,
   fetchAttendance, updateAttendance,
   fetchLogs,
-  fetchDraft, generateDraft, saveDraft, applyDraft, abandonDraft, fetchDraftConflicts
+  fetchDraft, generateDraft, saveDraft, applyDraft, abandonDraft, fetchDraftConflicts,
+  fetchTemplates, saveTemplate, checkTemplateApplyConflicts, applyTemplate,
+  fetchTemplateSnapshots, rollbackTemplateSnapshot
 } from '@/utils/api'
 import { toast } from '@/components/Toast'
-import type { Session, Seat, Roster, Student, SwapRequest, AttendanceRecord, OperationLog, SeatingDraft, DraftConflict, DraftItem } from '@/types'
+import type {
+  Session, Seat, Roster, Student, SwapRequest, AttendanceRecord, OperationLog,
+  SeatingDraft, DraftConflict, DraftItem, SeatingTemplate, TemplateApplyConflict,
+  TemplateApplySnapshot
+} from '@/types'
 
 type TabKey = 'seats' | 'swap' | 'attendance' | 'logs'
 
@@ -42,6 +49,15 @@ const opTypeLabels: Record<string, string> = {
   apply_draft: '应用草稿',
   apply_draft_failed: '应用草稿失败',
   abandon_draft: '放弃草稿',
+  save_template: '保存模板',
+  overwrite_template: '覆盖模板',
+  update_template: '更新模板',
+  delete_template: '删除模板',
+  export_template: '导出模板',
+  import_template: '导入模板',
+  apply_template: '套用模板',
+  apply_template_failed: '套用模板失败',
+  rollback_template: '撤销套用模板',
 }
 
 const attendanceLabels: Record<string, string> = {
@@ -90,15 +106,30 @@ export default function SessionDetail() {
   const [draftSelectedStudentId, setDraftSelectedStudentId] = useState<number | null>(null)
   const [draftDirty, setDraftDirty] = useState(false)
 
+  const [templates, setTemplates] = useState<SeatingTemplate[]>([])
+  const [showSaveTemplateModal, setShowSaveTemplateModal] = useState(false)
+  const [saveTemplateForm, setSaveTemplateForm] = useState({ name: '', remark: '', checkInInitRule: 'not_checked_in', overwrite: false })
+  const [showApplyTemplateModal, setShowApplyTemplateModal] = useState(false)
+  const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null)
+  const [applyConflicts, setApplyConflicts] = useState<TemplateApplyConflict[]>([])
+  const [checkingConflicts, setCheckingConflicts] = useState(false)
+  const [snapshots, setSnapshots] = useState<TemplateApplySnapshot[]>([])
+  const [showRollbackModal, setShowRollbackModal] = useState(false)
+  const [selectedSnapshot, setSelectedSnapshot] = useState<TemplateApplySnapshot | null>(null)
+
   const loadData = async () => {
     try {
-      const [sessionData, seatsData] = await Promise.all([
+      const [sessionData, seatsData, templatesData, snapshotsData] = await Promise.all([
         fetchSessions(),
         fetchSessionSeats(sessionId),
+        fetchTemplates(),
+        fetchTemplateSnapshots(sessionId),
       ])
       const s = sessionData.find((s) => s.id === sessionId)
       if (s) setSession(s)
       setSeats(seatsData)
+      setTemplates(templatesData)
+      setSnapshots(snapshotsData)
     } catch (e: any) {
       toast(e.message, 'error')
     } finally {
@@ -256,6 +287,126 @@ export default function SessionDetail() {
       setDraftDirty(false)
       setDraftConflicts([])
       toast('草稿已放弃', 'success')
+    } catch (e: any) {
+      toast(e.message, 'error')
+    }
+  }
+
+  const handleOpenSaveTemplate = () => {
+    const occupiedCount = seats.filter(s => s.status === 'occupied').length
+    if (occupiedCount === 0) {
+      toast('当前场次没有排座记录，无法保存为模板', 'error')
+      return
+    }
+    if (currentRole !== 'admin') {
+      toast('仅管理员可保存模板', 'error')
+      return
+    }
+    setSaveTemplateForm({ name: '', remark: '', checkInInitRule: 'not_checked_in', overwrite: false })
+    setShowSaveTemplateModal(true)
+  }
+
+  const handleSaveTemplate = async () => {
+    if (!saveTemplateForm.name.trim()) {
+      toast('请输入模板名称', 'error')
+      return
+    }
+    try {
+      const result = await saveTemplate({
+        sessionId,
+        name: saveTemplateForm.name.trim(),
+        remark: saveTemplateForm.remark.trim(),
+        checkInInitRule: saveTemplateForm.checkInInitRule,
+        overwrite: saveTemplateForm.overwrite
+      })
+      toast(`模板${saveTemplateForm.overwrite ? '覆盖' : '保存'}成功`, 'success')
+      setShowSaveTemplateModal(false)
+      setTemplates(await fetchTemplates())
+    } catch (e: any) {
+      if (e.message.includes('已存在') && !saveTemplateForm.overwrite) {
+        if (confirm(`模板名称 "${saveTemplateForm.name}" 已存在，是否覆盖？`)) {
+          setSaveTemplateForm({ ...saveTemplateForm, overwrite: true })
+          return
+        }
+      }
+      toast(e.message, 'error')
+    }
+  }
+
+  const handleOpenApplyTemplate = () => {
+    if (currentRole !== 'admin') {
+      toast('仅管理员可套用模板', 'error')
+      return
+    }
+    if (!session?.roster_id) {
+      toast('请先绑定名单后再套用模板', 'error')
+      return
+    }
+    setSelectedTemplateId(null)
+    setApplyConflicts([])
+    setShowApplyTemplateModal(true)
+  }
+
+  const handleTemplateSelect = async (templateId: number) => {
+    setSelectedTemplateId(templateId)
+    setCheckingConflicts(true)
+    setApplyConflicts([])
+    try {
+      const conflicts = await checkTemplateApplyConflicts(templateId, sessionId, currentRole)
+      setApplyConflicts(conflicts)
+    } catch (e: any) {
+      toast(e.message, 'error')
+    } finally {
+      setCheckingConflicts(false)
+    }
+  }
+
+  const handleApplyTemplate = async () => {
+    if (!selectedTemplateId) return
+    if (applyConflicts.length > 0) {
+      toast(`存在 ${applyConflicts.length} 个冲突，无法套用模板`, 'error')
+      return
+    }
+    const template = templates.find(t => t.id === selectedTemplateId)
+    if (!confirm(`确定套用模板 "${template?.name}"？这将批量分配 ${template?.item_count || 0} 个席位。`)) return
+
+    try {
+      const result = await applyTemplate(selectedTemplateId, sessionId, 'admin', currentRole)
+      setSeats(result.seats)
+      setSnapshots(await fetchTemplateSnapshots(sessionId))
+      toast(`套用成功，共分配 ${result.applied} 个席位`, 'success')
+      setShowApplyTemplateModal(false)
+      loadData()
+      loadTabData('logs')
+    } catch (e: any) {
+      if (e.conflicts) {
+        setApplyConflicts(e.conflicts)
+      }
+      toast(e.message, 'error')
+    }
+  }
+
+  const handleOpenRollback = (snapshot: TemplateApplySnapshot) => {
+    if (currentRole !== 'admin') {
+      toast('仅管理员可撤销套用', 'error')
+      return
+    }
+    setSelectedSnapshot(snapshot)
+    setShowRollbackModal(true)
+  }
+
+  const handleRollback = async () => {
+    if (!selectedSnapshot) return
+    if (!confirm(`确定撤销套用模板 "${selectedSnapshot.template_name}"？将恢复到套用前的状态。`)) return
+
+    try {
+      const result = await rollbackTemplateSnapshot(selectedSnapshot.id, 'admin', currentRole)
+      setSeats(result.seats)
+      setSnapshots(await fetchTemplateSnapshots(sessionId))
+      toast(`撤销成功，已恢复 ${result.restored_assignments} 条排座记录`, 'success')
+      setShowRollbackModal(false)
+      loadData()
+      loadTabData('logs')
     } catch (e: any) {
       toast(e.message, 'error')
     }
@@ -454,6 +605,24 @@ export default function SessionDetail() {
               <FileEdit className="w-4 h-4" />
               {draftMode ? '退出草稿' : '排座草稿'}
             </button>
+          )}
+          {activeTab === 'seats' && !draftMode && currentRole === 'admin' && (
+            <>
+              <button
+                onClick={handleOpenSaveTemplate}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition-colors"
+              >
+                <Save className="w-4 h-4" />
+                保存为模板
+              </button>
+              <button
+                onClick={handleOpenApplyTemplate}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm bg-blue-50 text-blue-700 hover:bg-blue-100 transition-colors"
+              >
+                <LayoutGrid className="w-4 h-4" />
+                套用模板
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -735,6 +904,255 @@ export default function SessionDetail() {
                 className="px-4 py-2 text-sm bg-cyan-500 hover:bg-cyan-600 text-white rounded-lg transition-colors"
               >
                 确认绑定
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSaveTemplateModal && (
+        <div className="fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md">
+            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-slate-800">保存为模板</h2>
+              <button onClick={() => setShowSaveTemplateModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">模板名称 <span className="text-red-500">*</span></label>
+                <input
+                  type="text"
+                  value={saveTemplateForm.name}
+                  onChange={(e) => setSaveTemplateForm({ ...saveTemplateForm, name: e.target.value })}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
+                  placeholder="例如：计算机1班标准排座"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">备注</label>
+                <textarea
+                  value={saveTemplateForm.remark}
+                  onChange={(e) => setSaveTemplateForm({ ...saveTemplateForm, remark: e.target.value })}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
+                  rows={3}
+                  placeholder="可选，描述模板用途"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">套用后签到初始状态</label>
+                <select
+                  value={saveTemplateForm.checkInInitRule}
+                  onChange={(e) => setSaveTemplateForm({ ...saveTemplateForm, checkInInitRule: e.target.value })}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
+                >
+                  <option value="not_checked_in">未签到</option>
+                  <option value="checked_in">已签到</option>
+                  <option value="late">迟到</option>
+                  <option value="absent">缺勤</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="overwrite-template"
+                  checked={saveTemplateForm.overwrite}
+                  onChange={(e) => setSaveTemplateForm({ ...saveTemplateForm, overwrite: e.target.checked })}
+                  className="w-4 h-4 rounded border-slate-300 text-cyan-500 focus:ring-cyan-500"
+                />
+                <label htmlFor="overwrite-template" className="text-sm text-slate-600">
+                  覆盖已存在的同名模板
+                </label>
+              </div>
+            </div>
+            <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-3">
+              <button
+                onClick={() => setShowSaveTemplateModal(false)}
+                className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleSaveTemplate}
+                disabled={!saveTemplateForm.name.trim()}
+                className="px-4 py-2 text-sm bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-white rounded-lg transition-colors"
+              >
+                <Save className="w-4 h-4 inline mr-1" />
+                保存
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showApplyTemplateModal && (
+        <div className="fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
+            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-slate-800">套用模板</h2>
+              <button onClick={() => setShowApplyTemplateModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6 overflow-auto flex-1 space-y-4">
+              {templates.length === 0 ? (
+                <div className="text-center py-8 text-slate-400">
+                  <LayoutGrid className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                  <p>暂无可用模板</p>
+                  <p className="text-sm mt-1">请先在场次详情中保存排座为模板</p>
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-2">选择模板</label>
+                    <div className="grid grid-cols-1 gap-2 max-h-48 overflow-auto border border-slate-200 rounded-lg p-2">
+                      {templates.map((t) => (
+                        <label
+                          key={t.id}
+                          className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-colors ${
+                            selectedTemplateId === t.id
+                              ? 'bg-cyan-50 border-2 border-cyan-400'
+                              : 'bg-slate-50 border-2 border-transparent hover:bg-slate-100'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="template"
+                            value={t.id}
+                            checked={selectedTemplateId === t.id}
+                            onChange={() => handleTemplateSelect(t.id)}
+                            className="w-4 h-4 text-cyan-500 focus:ring-cyan-500"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium text-slate-800">{t.name}</div>
+                            <div className="text-xs text-slate-500 flex items-center gap-2">
+                              <span>{t.rows}×{t.cols}</span>
+                              <span>·</span>
+                              <span>{t.item_count} 条记录</span>
+                              {t.roster_name && (
+                                <>
+                                  <span>·</span>
+                                  <span>关联: {t.roster_name}</span>
+                                </>
+                              )}
+                            </div>
+                            {t.remark && <div className="text-xs text-slate-400 mt-1">{t.remark}</div>}
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  {checkingConflicts && (
+                    <div className="bg-slate-50 rounded-lg p-4 text-center">
+                      <div className="w-6 h-6 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+                      <p className="text-sm text-slate-600">正在检测冲突...</p>
+                    </div>
+                  )}
+
+                  {!checkingConflicts && selectedTemplateId && (
+                    <TemplateConflictList conflicts={applyConflicts} />
+                  )}
+
+                  {snapshots.length > 0 && (
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+                      <h4 className="text-sm font-medium text-amber-800 mb-2 flex items-center gap-2">
+                        <RotateCcw className="w-4 h-4" />
+                        历史套用记录（可撤销）
+                      </h4>
+                      <div className="space-y-2 max-h-32 overflow-auto">
+                        {snapshots.map((s) => (
+                          <div
+                            key={s.id}
+                            className="flex items-center justify-between bg-white/50 rounded-lg p-2 text-sm"
+                          >
+                            <div>
+                              <span className="font-medium text-amber-800">{s.template_name}</span>
+                              <span className="text-amber-600 ml-2">
+                                由 {s.operator} 于 {new Date(s.applied_at).toLocaleString()} 套用
+                              </span>
+                            </div>
+                            {s.rolled_back ? (
+                              <span className="text-xs text-slate-400">已撤销</span>
+                            ) : (
+                              <button
+                                onClick={() => handleOpenRollback(s)}
+                                className="text-xs text-red-600 hover:text-red-700 hover:bg-red-50 px-2 py-1 rounded transition-colors"
+                              >
+                                撤销
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-3">
+              <button
+                onClick={() => setShowApplyTemplateModal(false)}
+                className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleApplyTemplate}
+                disabled={!selectedTemplateId || applyConflicts.length > 0 || checkingConflicts}
+                className="px-4 py-2 text-sm bg-cyan-500 hover:bg-cyan-600 disabled:opacity-50 text-white rounded-lg transition-colors"
+              >
+                <Play className="w-4 h-4 inline mr-1" />
+                套用
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRollbackModal && selectedSnapshot && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md">
+            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-slate-800">撤销套用模板</h2>
+              <button onClick={() => setShowRollbackModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6">
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-4">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="w-6 h-6 text-amber-500 shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="font-medium text-amber-800 mb-1">确认撤销</h4>
+                    <p className="text-sm text-amber-700">
+                      将撤销模板 "{selectedSnapshot.template_name}" 的套用，
+                      恢复到套用前的排座和签到状态。
+                    </p>
+                    <p className="text-xs text-amber-600 mt-2">
+                      操作人: {selectedSnapshot.operator} · 套用时间: {new Date(selectedSnapshot.applied_at).toLocaleString()}
+                    </p>
+                  </div>
+                </div>
+              </div>
+              <p className="text-sm text-slate-600">
+                此操作将删除套用模板后产生的所有排座和签到记录，并恢复套用前的数据。
+              </p>
+            </div>
+            <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-3">
+              <button
+                onClick={() => setShowRollbackModal(false)}
+                className="px-4 py-2 text-sm text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleRollback}
+                className="px-4 py-2 text-sm bg-red-500 hover:bg-red-600 text-white rounded-lg transition-colors"
+              >
+                <RotateCcw className="w-4 h-4 inline mr-1" />
+                确认撤销
               </button>
             </div>
           </div>
@@ -1074,6 +1492,69 @@ function DraftSeatGrid({
           </div>
         ))}
       </div>
+    </div>
+  )
+}
+
+function TemplateConflictList({ conflicts }: { conflicts: TemplateApplyConflict[] }) {
+  if (conflicts.length === 0) return null
+
+  const getConflictIcon = (type: string) => {
+    switch (type) {
+      case 'layout_mismatch':
+      case 'roster_unbound':
+      case 'permission_denied':
+        return <XCircle className="w-4 h-4 text-red-500" />
+      case 'student_not_found':
+      case 'student_not_in_roster':
+        return <UserMinus className="w-4 h-4 text-orange-500" />
+      case 'seat_occupied':
+      case 'duplicate_seat':
+        return <AlertTriangle className="w-4 h-4 text-amber-500" />
+      case 'duplicate_student':
+        return <AlertTriangle className="w-4 h-4 text-amber-500" />
+      default:
+        return <AlertTriangle className="w-4 h-4 text-slate-500" />
+    }
+  }
+
+  const getConflictLabel = (type: string) => {
+    switch (type) {
+      case 'layout_mismatch': return '布局不匹配'
+      case 'roster_unbound': return '名单未绑定'
+      case 'permission_denied': return '权限不足'
+      case 'student_not_found': return '学生不存在'
+      case 'student_not_in_roster': return '学生不在名单中'
+      case 'seat_occupied': return '席位已占用'
+      case 'duplicate_seat': return '重复分配席位'
+      case 'duplicate_student': return '重复分配学生'
+      default: return type
+    }
+  }
+
+  return (
+    <div className="bg-red-50 border border-red-200 rounded-xl p-4 max-h-64 overflow-auto">
+      <h4 className="text-sm font-semibold text-red-800 mb-3 flex items-center gap-2">
+        <AlertTriangle className="w-4 h-4" />
+        检测到 {conflicts.length} 个冲突，无法套用模板
+      </h4>
+      <ul className="space-y-2">
+        {conflicts.map((c, i) => (
+          <li key={i} className="flex items-start gap-2 text-sm bg-white/50 rounded-lg p-2">
+            {getConflictIcon(c.type)}
+            <div className="flex-1">
+              <span className="font-medium text-red-700">[{getConflictLabel(c.type)}]</span>
+              <span className="text-red-600 ml-1">{c.reason}</span>
+              {(c.seat_number || c.student_no) && (
+                <div className="text-xs text-red-500 mt-0.5">
+                  {c.seat_number && <span className="mr-2">席位: {c.seat_number}</span>}
+                  {c.student_no && <span>学生: {c.student_name}({c.student_no})</span>}
+                </div>
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

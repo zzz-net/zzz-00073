@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { X, CheckCircle, AlertCircle, Info } from 'lucide-react'
 
-type ToastType = 'success' | 'error' | 'info'
+type ToastType = 'success' | 'error' | 'info' | 'warning'
 
 interface Toast {
   id: number
@@ -39,12 +39,14 @@ export default function ToastContainer() {
   const icons = {
     success: <CheckCircle className="w-5 h-5 text-emerald-400" />,
     error: <AlertCircle className="w-5 h-5 text-red-400" />,
+    warning: <AlertCircle className="w-5 h-5 text-amber-400" />,
     info: <Info className="w-5 h-5 text-cyan-400" />,
   }
 
   const bgColors = {
     success: 'bg-emerald-900/90 border-emerald-700',
     error: 'bg-red-900/90 border-red-700',
+    warning: 'bg-amber-900/90 border-amber-700',
     info: 'bg-slate-800/90 border-slate-600',
   }
 

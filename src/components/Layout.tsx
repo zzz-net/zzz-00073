@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
-import { LayoutDashboard, Users, Download, UserCog, Menu, X } from 'lucide-react'
+import { LayoutDashboard, Users, Download, UserCog, Menu, X, LayoutGrid } from 'lucide-react'
 import { useAppStore } from '@/stores/appStore'
 
 const navItems = [
   { to: '/', label: '场次管理', icon: LayoutDashboard },
   { to: '/roster', label: '名单管理', icon: Users },
+  { to: '/templates', label: '排座模板', icon: LayoutGrid },
   { to: '/export', label: '导出', icon: Download },
 ]
 

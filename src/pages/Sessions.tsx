@@ -1,9 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Trash2, Calendar, Clock, Users } from 'lucide-react'
-import { fetchSessions, createSession, deleteSession } from '@/utils/api'
+import { Plus, Trash2, Calendar, Clock, Users, LayoutGrid, Link2, X, AlertTriangle, CheckCircle } from 'lucide-react'
+import {
+  fetchSessions, createSession, deleteSession,
+  fetchTemplates, fetchRosters, updateSession,
+  checkTemplateApplyConflicts, applyTemplate
+} from '@/utils/api'
 import { toast } from '@/components/Toast'
-import type { Session } from '@/types'
+import type { Session, SeatingTemplate, Roster, TemplateApplyConflict } from '@/types'
 
 const statusConfig = {
   draft: { label: '草稿', bg: 'bg-slate-200', text: 'text-slate-600' },
@@ -23,12 +27,25 @@ export default function Sessions() {
     time_end: '',
     rows: 5,
     cols: 8,
+    rosterId: null as number | null,
+    templateId: null as number | null,
   })
+  const [templates, setTemplates] = useState<SeatingTemplate[]>([])
+  const [rosters, setRosters] = useState<Roster[]>([])
+  const [applyConflicts, setApplyConflicts] = useState<TemplateApplyConflict[]>([])
+  const [checkingConflicts, setCheckingConflicts] = useState(false)
+  const [creating, setCreating] = useState(false)
 
   const loadSessions = async () => {
     try {
-      const data = await fetchSessions()
+      const [data, templatesData, rostersData] = await Promise.all([
+        fetchSessions(),
+        fetchTemplates(),
+        fetchRosters(),
+      ])
       setSessions(data)
+      setTemplates(templatesData)
+      setRosters(rostersData)
     } catch (e: any) {
       toast(e.message, 'error')
     } finally {
@@ -40,13 +57,80 @@ export default function Sessions() {
     loadSessions()
   }, [])
 
+  const handleTemplateSelect = async (templateId: number | null) => {
+    setForm({ ...form, templateId })
+    setApplyConflicts([])
+
+    if (templateId && form.rosterId) {
+      const template = templates.find(t => t.id === templateId)
+      if (template) {
+        setForm(prev => ({ ...prev, rows: template.rows, cols: template.cols }))
+      }
+    }
+  }
+
+  const handleRosterSelect = async (rosterId: number | null) => {
+    setForm({ ...form, rosterId })
+    setApplyConflicts([])
+
+    if (form.templateId && rosterId) {
+      const template = templates.find(t => t.id === form.templateId)
+      if (template) {
+        setCheckingConflicts(true)
+        try {
+          const tempSession = {
+            id: 0,
+            rows: template.rows,
+            cols: template.cols,
+            roster_id: rosterId,
+          } as Session
+          const mockSessionId = 0
+          const conflicts = await checkTemplateApplyConflicts(form.templateId, mockSessionId, 'admin')
+          setApplyConflicts(conflicts.filter(c =>
+            c.type !== 'layout_mismatch' ||
+            !c.reason.includes('场次不存在')
+          ))
+        } catch (e: any) {
+          toast(e.message, 'error')
+        } finally {
+          setCheckingConflicts(false)
+        }
+      }
+    }
+  }
+
+  const handleOpenModal = () => {
+    setForm({
+      name: '',
+      date: '',
+      time_start: '',
+      time_end: '',
+      rows: 5,
+      cols: 8,
+      rosterId: null,
+      templateId: null,
+    })
+    setApplyConflicts([])
+    setShowModal(true)
+  }
+
   const handleCreate = async () => {
     if (!form.name || !form.date || !form.time_start || !form.time_end) {
       toast('请填写所有必填项', 'error')
       return
     }
+    if (form.templateId && !form.rosterId) {
+      toast('套用模板时必须先选择名单', 'error')
+      return
+    }
+    if (form.templateId && applyConflicts.length > 0) {
+      toast(`存在 ${applyConflicts.length} 个冲突，无法套用模板`, 'error')
+      return
+    }
+
+    setCreating(true)
     try {
-      await createSession({
+      const newSession = await createSession({
         name: form.name,
         date: form.date,
         time_start: form.time_start,
@@ -55,12 +139,29 @@ export default function Sessions() {
         cols: form.cols,
         status: 'draft',
       })
-      toast('场次创建成功', 'success')
+
+      if (form.rosterId) {
+        await updateSession(newSession.id, { roster_id: form.rosterId } as any)
+      }
+
+      if (form.templateId && form.rosterId) {
+        const conflicts = await checkTemplateApplyConflicts(form.templateId, newSession.id, 'admin')
+        if (conflicts.length > 0) {
+          toast(`创建成功，但套用模板时存在 ${conflicts.length} 个冲突`, 'warning')
+        } else {
+          await applyTemplate(form.templateId, newSession.id, 'admin', 'admin')
+          toast('场次创建并套用模板成功', 'success')
+        }
+      } else {
+        toast('场次创建成功', 'success')
+      }
+
       setShowModal(false)
-      setForm({ name: '', date: '', time_start: '', time_end: '', rows: 5, cols: 8 })
       loadSessions()
     } catch (e: any) {
       toast(e.message, 'error')
+    } finally {
+      setCreating(false)
     }
   }
 
@@ -96,7 +197,7 @@ export default function Sessions() {
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-slate-800">场次管理</h1>
         <button
-          onClick={() => setShowModal(true)}
+          onClick={handleOpenModal}
           className="flex items-center gap-2 px-4 py-2.5 bg-cyan-500 hover:bg-cyan-600 text-white rounded-lg transition-colors shadow-sm"
         >
           <Plus className="w-4 h-4" />
@@ -176,13 +277,16 @@ export default function Sessions() {
 
       {showModal && (
         <div className="fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-md">
-            <div className="px-6 py-4 border-b border-slate-200">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+            <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between">
               <h2 className="text-lg font-semibold text-slate-800">创建场次</h2>
+              <button onClick={() => setShowModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-5 h-5" />
+              </button>
             </div>
-            <div className="p-6 space-y-4">
+            <div className="p-6 overflow-auto flex-1 space-y-4">
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">场次名称</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">场次名称 <span className="text-red-500">*</span></label>
                 <input
                   type="text"
                   value={form.name}
@@ -192,7 +296,7 @@ export default function Sessions() {
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">日期</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">日期 <span className="text-red-500">*</span></label>
                 <input
                   type="date"
                   value={form.date}
@@ -202,7 +306,7 @@ export default function Sessions() {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">开始时间</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">开始时间 <span className="text-red-500">*</span></label>
                   <input
                     type="time"
                     value={form.time_start}
@@ -211,7 +315,7 @@ export default function Sessions() {
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">结束时间</label>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">结束时间 <span className="text-red-500">*</span></label>
                   <input
                     type="time"
                     value={form.time_end}
@@ -220,30 +324,170 @@ export default function Sessions() {
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">行数</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={20}
-                    value={form.rows}
-                    onChange={(e) => setForm({ ...form, rows: parseInt(e.target.value) || 1 })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">列数</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={20}
-                    value={form.cols}
-                    onChange={(e) => setForm({ ...form, cols: parseInt(e.target.value) || 1 })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
-                  />
-                </div>
+
+              <div className="border-t border-slate-200 pt-4">
+                <h3 className="text-sm font-medium text-slate-700 mb-3 flex items-center gap-2">
+                  <Link2 className="w-4 h-4" />
+                  绑定名单（可选）
+                </h3>
+                <select
+                  value={form.rosterId || ''}
+                  onChange={(e) => handleRosterSelect(Number(e.target.value) || null)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
+                >
+                  <option value="">-- 不绑定 --</option>
+                  {rosters.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.name} ({r.student_count}人)
+                    </option>
+                  ))}
+                </select>
               </div>
+
+              <div className="border-t border-slate-200 pt-4">
+                <h3 className="text-sm font-medium text-slate-700 mb-3 flex items-center gap-2">
+                  <LayoutGrid className="w-4 h-4" />
+                  套用模板（可选）
+                </h3>
+                {templates.length === 0 ? (
+                  <p className="text-sm text-slate-400">暂无可用模板，可创建后在场次详情中保存</p>
+                ) : (
+                  <div className="space-y-3">
+                    <select
+                      value={form.templateId || ''}
+                      onChange={(e) => handleTemplateSelect(Number(e.target.value) || null)}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
+                    >
+                      <option value="">-- 不套用 --</option>
+                      {templates.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name} ({t.rows}×{t.cols}, {t.item_count}条)
+                        </option>
+                      ))}
+                    </select>
+                    {form.templateId && (
+                      <div className="bg-slate-50 rounded-lg p-3 text-sm">
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <span className="text-slate-500">布局：</span>
+                            <span className="text-slate-700">{form.rows} × {form.cols}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500">签到初始：</span>
+                            <span className="text-slate-700">
+                              {templates.find(t => t.id === form.templateId)?.check_in_init_rule === 'not_checked_in' ? '未签到' :
+                               templates.find(t => t.id === form.templateId)?.check_in_init_rule === 'checked_in' ? '已签到' :
+                               templates.find(t => t.id === form.templateId)?.check_in_init_rule === 'late' ? '迟到' : '缺勤'}
+                            </span>
+                          </div>
+                        </div>
+                        {templates.find(t => t.id === form.templateId)?.remark && (
+                          <div className="mt-2">
+                            <span className="text-slate-500">备注：</span>
+                            <span className="text-slate-700">{templates.find(t => t.id === form.templateId)?.remark}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {form.templateId && !form.rosterId && (
+                  <p className="text-xs text-amber-600 mt-2 flex items-center gap-1">
+                    <AlertTriangle className="w-3 h-3" />
+                    套用模板时请先选择名单
+                  </p>
+                )}
+              </div>
+
+              {form.templateId && form.rosterId && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">行数</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={form.rows}
+                      onChange={(e) => setForm({ ...form, rows: parseInt(e.target.value) || 1 })}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent bg-slate-50"
+                      disabled={!!form.templateId}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">列数</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={form.cols}
+                      onChange={(e) => setForm({ ...form, cols: parseInt(e.target.value) || 1 })}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent bg-slate-50"
+                      disabled={!!form.templateId}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {!form.templateId && (
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">行数</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={form.rows}
+                      onChange={(e) => setForm({ ...form, rows: parseInt(e.target.value) || 1 })}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">列数</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={form.cols}
+                      onChange={(e) => setForm({ ...form, cols: parseInt(e.target.value) || 1 })}
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {checkingConflicts && (
+                <div className="bg-slate-50 rounded-lg p-4 text-center">
+                  <div className="w-6 h-6 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
+                  <p className="text-sm text-slate-600">正在检测冲突...</p>
+                </div>
+              )}
+
+              {!checkingConflicts && applyConflicts.length > 0 && (
+                <div className="bg-red-50 border border-red-200 rounded-xl p-4 max-h-48 overflow-auto">
+                  <h4 className="text-sm font-semibold text-red-800 mb-3 flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4" />
+                    检测到 {applyConflicts.length} 个冲突
+                  </h4>
+                  <ul className="space-y-2">
+                    {applyConflicts.map((c, i) => (
+                      <li key={i} className="flex items-start gap-2 text-sm bg-white/50 rounded-lg p-2">
+                        <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                        <div className="flex-1">
+                          <span className="font-medium text-red-700">[{c.type}]</span>
+                          <span className="text-red-600 ml-1">{c.reason}</span>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {!checkingConflicts && form.templateId && form.rosterId && applyConflicts.length === 0 && (
+                <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 flex items-center gap-2">
+                  <CheckCircle className="w-5 h-5 text-emerald-500" />
+                  <span className="text-sm text-emerald-700">模板与名单匹配，可正常套用</span>
+                </div>
+              )}
             </div>
             <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-3">
               <button
@@ -254,9 +498,11 @@ export default function Sessions() {
               </button>
               <button
                 onClick={handleCreate}
-                className="px-4 py-2 text-sm bg-cyan-500 hover:bg-cyan-600 text-white rounded-lg transition-colors"
+                disabled={creating || !form.name || !form.date || !form.time_start || !form.time_end}
+                className="px-4 py-2 text-sm bg-cyan-500 hover:bg-cyan-600 disabled:opacity-50 text-white rounded-lg transition-colors flex items-center gap-2"
               >
-                创建
+                {creating && <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+                {creating ? '创建中...' : '创建'}
               </button>
             </div>
           </div>

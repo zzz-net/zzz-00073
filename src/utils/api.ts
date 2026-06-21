@@ -1,4 +1,8 @@
-import type { Session, Seat, Roster, Student, Assignment, SwapRequest, AttendanceRecord, OperationLog, SeatingDraft, DraftConflict } from '@/types'
+import type {
+  Session, Seat, Roster, Student, Assignment, SwapRequest,
+  AttendanceRecord, OperationLog, SeatingDraft, DraftConflict,
+  SeatingTemplate, TemplateApplyConflict, TemplateApplySnapshot
+} from '@/types'
 
 const BASE = '/api'
 
@@ -8,7 +12,8 @@ interface ApiResponse<T> {
   error?: string
   message?: string
   duplicates?: string[]
-  conflicts?: DraftConflict[]
+  conflicts?: DraftConflict[] | TemplateApplyConflict[]
+  details?: string[]
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -242,5 +247,112 @@ export async function applyDraft(sessionId: number): Promise<{ applied: number; 
 export async function abandonDraft(sessionId: number): Promise<void> {
   await request(`/sessions/${sessionId}/draft/abandon`, {
     method: 'POST',
+  })
+}
+
+export async function fetchTemplates(): Promise<SeatingTemplate[]> {
+  return request<SeatingTemplate[]>('/seating-templates')
+}
+
+export async function fetchTemplate(id: number): Promise<SeatingTemplate> {
+  return request<SeatingTemplate>(`/seating-templates/${id}`)
+}
+
+export async function saveTemplate(data: {
+  sessionId: number
+  name: string
+  remark?: string
+  checkInInitRule?: string
+  overwrite?: boolean
+}): Promise<SeatingTemplate> {
+  return request<SeatingTemplate>('/seating-templates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+}
+
+export async function updateTemplate(id: number, data: {
+  name?: string
+  remark?: string
+  checkInInitRule?: string
+}): Promise<SeatingTemplate> {
+  return request<SeatingTemplate>(`/seating-templates/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+}
+
+export async function deleteTemplate(id: number): Promise<void> {
+  await request(`/seating-templates/${id}`, {
+    method: 'DELETE',
+  })
+}
+
+export async function exportTemplate(id: number): Promise<any> {
+  const res = await fetch(`${BASE}/seating-templates/${id}/export`)
+  return res.json()
+}
+
+export async function importTemplate(data: any): Promise<SeatingTemplate> {
+  return request<SeatingTemplate>('/seating-templates/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+}
+
+export async function checkTemplateApplyConflicts(
+  templateId: number,
+  sessionId: number,
+  operatorRole: string = 'admin'
+): Promise<TemplateApplyConflict[]> {
+  return request<TemplateApplyConflict[]>(`/seating-templates/${templateId}/apply/conflicts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, operatorRole }),
+  })
+}
+
+export async function applyTemplate(
+  templateId: number,
+  sessionId: number,
+  operator: string = 'admin',
+  operatorRole: string = 'admin'
+): Promise<{ applied: number; seats: Seat[]; snapshot: TemplateApplySnapshot }> {
+  return request<{ applied: number; seats: Seat[]; snapshot: TemplateApplySnapshot }>(
+    `/seating-templates/${templateId}/apply`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, operator, operatorRole }),
+    }
+  )
+}
+
+export async function fetchTemplateSnapshots(sessionId: number): Promise<TemplateApplySnapshot[]> {
+  return request<TemplateApplySnapshot[]>(`/seating-templates/sessions/${sessionId}/snapshots`)
+}
+
+export async function rollbackTemplateSnapshot(
+  snapshotId: number,
+  operator: string = 'admin',
+  operatorRole: string = 'admin'
+): Promise<{
+  restored_assignments: number
+  restored_attendance: number
+  seats: Seat[]
+  attendance: AttendanceRecord[]
+}> {
+  return request<{
+    restored_assignments: number
+    restored_attendance: number
+    seats: Seat[]
+    attendance: AttendanceRecord[]
+  }>(`/seating-templates/snapshots/${snapshotId}/rollback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ operator, operatorRole }),
   })
 }
