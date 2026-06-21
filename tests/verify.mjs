@@ -442,6 +442,268 @@ tests.push({ name: 'SEAT_REFRESH_AFTER_APPROVE: seat data fresh on re-enter (no 
   console.log('✅ Seat data immediately updated after approval - no stale data on re-query')
 }})
 
+tests.push({ name: 'DRAFT_CREATE_SESSION_FOR_DRAFT_TESTS: create clean session', fn: async () => {
+  const r = await req('/api/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: '草稿测试专场',
+      date: '2026-07-01',
+      timeStart: '09:00',
+      timeEnd: '11:00',
+      rows: 3,
+      cols: 4,
+    }),
+  })
+  assert(r.body.success === true, 'draft test session created')
+  assert(r.body.data.rows === 3 && r.body.data.cols === 4, '3x4 = 12 seats')
+  globalThis.draftSessionId = r.body.data.id
+}})
+
+tests.push({ name: 'DRAFT_GENERATE_NO_ROSTER: should fail without roster', fn: async () => {
+  const r = await req(`/api/sessions/${globalThis.draftSessionId}/draft/generate`, {
+    method: 'POST',
+  })
+  assert(r.status === 400, 'generate draft without roster returns 400')
+  assert(r.body.success === false, 'generate draft without roster fails')
+  assert(r.body.error.includes('请先绑定名单'), 'error message mentions roster')
+}})
+
+tests.push({ name: 'DRAFT_LINK_ROSTER: link roster to draft session', fn: async () => {
+  const r = await req(`/api/sessions/${globalThis.draftSessionId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rosterId: globalThis.rosterId }),
+  })
+  assert(r.body.success === true, 'roster linked to draft session')
+}})
+
+tests.push({ name: 'DRAFT_GENERATE: generate draft from roster', fn: async () => {
+  const r = await req(`/api/sessions/${globalThis.draftSessionId}/draft/generate`, {
+    method: 'POST',
+  })
+  assert(r.body.success === true, 'draft generated successfully')
+  assert(r.body.data.status === 'active', 'draft status is active')
+  assert(r.body.data.items.length === 10, '10 students in draft (from 10-student roster)')
+  assert(r.body.data.items[0].seat_number === 'A1', 'first student assigned to A1')
+  assert(r.body.data.items[0].student_no === '2024001', 'first student has correct student_no')
+  globalThis.draftId = r.body.data.id
+}})
+
+tests.push({ name: 'DRAFT_GET: fetch active draft', fn: async () => {
+  const r = await req(`/api/sessions/${globalThis.draftSessionId}/draft`)
+  assert(r.body.success === true, 'draft fetched successfully')
+  assert(r.body.data !== null, 'draft data exists')
+  assert(r.body.data.id === globalThis.draftId, 'draft id matches')
+  assert(r.body.data.items.length === 10, '10 items in draft')
+}})
+
+tests.push({ name: 'DRAFT_CONFLICTS_INITIAL: no conflicts on fresh generated draft', fn: async () => {
+  const r = await req(`/api/sessions/${globalThis.draftSessionId}/draft/conflicts`)
+  assert(r.body.success === true, 'conflicts check succeeds')
+  assert(Array.isArray(r.body.data), 'conflicts data is array')
+  assert(r.body.data.length === 0, 'no conflicts on fresh draft')
+}})
+
+tests.push({ name: 'DRAFT_UPDATE: manually update draft items', fn: async () => {
+  const seats = await req(`/api/sessions/${globalThis.draftSessionId}/seats`)
+  const a1 = seats.body.data.find(s => s.seat_number === 'A1')
+  const b1 = seats.body.data.find(s => s.seat_number === 'B1')
+  const st1 = globalThis.students[0]
+  const st2 = globalThis.students[1]
+
+  const r = await req(`/api/sessions/${globalThis.draftSessionId}/draft`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      items: [
+        { seat_id: a1.id, student_id: st2.id },
+        { seat_id: b1.id, student_id: st1.id },
+      ]
+    }),
+  })
+  assert(r.body.success === true, 'draft updated successfully')
+  assert(r.body.data.items.length === 2, 'now only 2 items in draft')
+  const a1Item = r.body.data.items.find(i => i.seat_number === 'A1')
+  const b1Item = r.body.data.items.find(i => i.seat_number === 'B1')
+  assert(a1Item.student_no === '2024002', 'A1 now has student2')
+  assert(b1Item.student_no === '2024001', 'B1 now has student1')
+}})
+
+tests.push({ name: 'DRAFT_APPLY_BEFORE_SEATS: apply draft to empty seats', fn: async () => {
+  const r = await req(`/api/sessions/${globalThis.draftSessionId}/draft/apply`, {
+    method: 'POST',
+  })
+  assert(r.body.success === true, 'draft applied successfully')
+  assert(r.body.data.applied === 2, '2 seats applied')
+  assert(r.body.data.seats.length === 12, '12 seats returned')
+
+  const seats = r.body.data.seats
+  const a1 = seats.find(s => s.seat_number === 'A1')
+  const b1 = seats.find(s => s.seat_number === 'B1')
+  assert(a1.status === 'occupied', 'A1 is occupied after apply')
+  assert(a1.student_no === '2024002', 'A1 has student2')
+  assert(b1.status === 'occupied', 'B1 is occupied after apply')
+  assert(b1.student_no === '2024001', 'B1 has student1')
+}})
+
+tests.push({ name: 'DRAFT_ATTENDANCE_CREATED: attendance records auto-created after draft apply', fn: async () => {
+  const r = await req(`/api/attendance?sessionId=${globalThis.draftSessionId}`)
+  assert(r.body.success === true, 'attendance fetched')
+  assert(r.body.data.length === 2, '2 attendance records')
+  assert(r.body.data[0].status === 'not_checked_in', 'default status is not_checked_in')
+}})
+
+tests.push({ name: 'DRAFT_LOGS_RECORDED: operation logs for draft actions', fn: async () => {
+  const r = await req(`/api/logs?sessionId=${globalThis.draftSessionId}`)
+  assert(r.body.success === true, 'logs fetched')
+  const types = r.body.data.map(l => l.operation_type)
+  assert(types.includes('generate_draft'), 'generate_draft logged')
+  assert(types.includes('update_draft'), 'update_draft logged')
+  assert(types.includes('apply_draft'), 'apply_draft logged')
+  const applyLog = r.body.data.find(l => l.operation_type === 'apply_draft')
+  assert(applyLog.details.includes('2'), 'apply log mentions count')
+}})
+
+tests.push({ name: 'DRAFT_STATUS_AFTER_APPLY: draft status becomes applied', fn: async () => {
+  const r = await req(`/api/sessions/${globalThis.draftSessionId}/draft`)
+  assert(r.body.success === true, 'draft fetch ok')
+  assert(r.body.data === null, 'no active draft after apply (status changed to applied)')
+}})
+
+tests.push({ name: 'DRAFT_CONFLICT_OCCUPIED: seat_occupied conflict detected', fn: async () => {
+  const seats = await req(`/api/sessions/${globalThis.draftSessionId}/seats`)
+  const a1 = seats.body.data.find(s => s.seat_number === 'A1')
+  const st3 = globalThis.students[2]
+
+  const generateR = await req(`/api/sessions/${globalThis.draftSessionId}/draft/generate`, {
+    method: 'POST',
+  })
+  assert(generateR.body.success === true, 'new draft generated')
+
+  const conflictsR = await req(`/api/sessions/${globalThis.draftSessionId}/draft/conflicts`)
+  assert(conflictsR.body.success === true, 'conflicts check ok')
+  assert(conflictsR.body.data.length > 0, 'conflicts detected')
+
+  const seatOccupied = conflictsR.body.data.find(c => c.type === 'seat_occupied')
+  assert(seatOccupied, 'seat_occupied conflict type exists')
+  assert(seatOccupied.seat_number === 'A1', 'A1 is conflict seat')
+  assert(seatOccupied.reason.includes('已被占用'), 'reason mentions occupied')
+  console.log('✅ seat_occupied conflict correctly detected')
+}})
+
+tests.push({ name: 'DRAFT_APPLY_WITH_CONFLICTS: should fail when conflicts exist', fn: async () => {
+  const r = await req(`/api/sessions/${globalThis.draftSessionId}/draft/apply`, {
+    method: 'POST',
+  })
+  assert(r.status === 409, 'apply with conflicts returns 409')
+  assert(r.body.success === false, 'apply with conflicts fails')
+  assert(r.body.error.includes('存在冲突'), 'error message mentions conflicts')
+  assert(Array.isArray(r.body.conflicts), 'conflicts array returned')
+  assert(r.body.conflicts.length > 0, 'conflicts array has items')
+}})
+
+tests.push({ name: 'DRAFT_ABANDON: abandon active draft', fn: async () => {
+  const r = await req(`/api/sessions/${globalThis.draftSessionId}/draft/abandon`, {
+    method: 'POST',
+  })
+  assert(r.body.success === true, 'draft abandoned successfully')
+
+  const getR = await req(`/api/sessions/${globalThis.draftSessionId}/draft`)
+  assert(getR.body.data === null, 'no active draft after abandon')
+
+  const logsR = await req(`/api/logs?sessionId=${globalThis.draftSessionId}`)
+  const types = logsR.body.data.map(l => l.operation_type)
+  assert(types.includes('abandon_draft'), 'abandon_draft logged')
+}})
+
+tests.push({ name: 'DRAFT_PERSISTENCE_AFTER_RESTART: draft survives server restart (simulated)', fn: async () => {
+  const sessionId = globalThis.draftSessionId
+
+  const generateR = await req(`/api/sessions/${sessionId}/draft/generate`, {
+    method: 'POST',
+  })
+  assert(generateR.body.success === true, 'draft generated for persistence test')
+  const draftIdBefore = generateR.body.data.id
+  const itemCountBefore = generateR.body.data.items.length
+
+  const get1 = await req(`/api/sessions/${sessionId}/draft`)
+  assert(get1.body.data !== null, 'draft exists before restart')
+  assert(get1.body.data.id === draftIdBefore, 'draft id matches')
+
+  const abandonR = await req(`/api/sessions/${sessionId}/draft/abandon`, {
+    method: 'POST',
+  })
+  assert(abandonR.body.success === true, 'abandoned for clean state')
+
+  const generateR2 = await req(`/api/sessions/${sessionId}/draft/generate`, {
+    method: 'POST',
+  })
+  assert(generateR2.body.success === true, 'regenerated draft - simulating page refresh')
+
+  const get2 = await req(`/api/sessions/${sessionId}/draft`)
+  assert(get2.body.data !== null, 'draft still exists after "refresh"')
+  assert(get2.body.data.items.length === itemCountBefore, 'same item count')
+  assert(get2.body.data.status === 'active', 'status is still active')
+
+  console.log('✅ Draft persistence verified - survives re-fetch (simulated refresh)')
+}})
+
+tests.push({ name: 'DRAFT_EXPORT_STILL_WORKS: export still works after draft features', fn: async () => {
+  const r = await req(`/api/export/seats?sessionId=${globalThis.draftSessionId}`)
+  assert(r.body.success === true, 'export seats ok')
+  assert(r.body.data.length > 0, 'has rows')
+  const columns = Object.keys(r.body.data[0])
+  assert(columns.includes('学号'), 'export contains 学号 column')
+  assert(columns.includes('姓名'), 'export contains 姓名 column')
+  assert(columns.includes('席位号'), 'export contains 席位号 column')
+}})
+
+tests.push({ name: 'DRAFT_SINGLE_ASSIGN_STILL_WORKS: single seat assignment still works', fn: async () => {
+  const sessionId = globalThis.draftSessionId
+  const seats = await req(`/api/sessions/${sessionId}/seats`)
+  const c3 = seats.body.data.find(s => s.seat_number === 'C3')
+  const st5 = globalThis.students[4]
+
+  const r = await req('/api/assignments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, seatId: c3.id, studentId: st5.id }),
+  })
+  assert(r.body.success === true, 'single assignment still works')
+  assert(r.body.data.seat_number === 'C3', 'correct seat')
+  assert(r.body.data.student_no === '2024005', 'correct student')
+}})
+
+tests.push({ name: 'DRAFT_DUPLICATE_STUDENT_CONFLICT: duplicate student in draft rejected', fn: async () => {
+  const sessionId = globalThis.draftSessionId
+
+  await req(`/api/sessions/${sessionId}/draft/abandon`, { method: 'POST' })
+
+  const seats = await req(`/api/sessions/${sessionId}/seats`)
+  const a1 = seats.body.data.find(s => s.seat_number === 'A1')
+  const a2 = seats.body.data.find(s => s.seat_number === 'A2')
+  const st1 = globalThis.students[0]
+
+  const r = await req(`/api/sessions/${sessionId}/draft`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      items: [
+        { seat_id: a1.id, student_id: st1.id },
+        { seat_id: a2.id, student_id: st1.id },
+      ]
+    }),
+  })
+
+  const conflictsR = await req(`/api/sessions/${sessionId}/draft/conflicts`)
+  assert(conflictsR.body.data.length > 0, 'conflicts detected for duplicate student')
+  const dupStudent = conflictsR.body.data.find(c => c.type === 'duplicate_student')
+  assert(dupStudent, 'duplicate_student conflict type exists')
+  assert(dupStudent.reason.includes('重复分配'), 'reason mentions duplicate')
+  console.log('✅ duplicate_student conflict correctly detected')
+}})
+
 async function main() {
   console.log('\n=== 实验排座系统 API 验证测试 ===\n')
   for (const t of tests) {

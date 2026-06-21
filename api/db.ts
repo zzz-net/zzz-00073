@@ -120,6 +120,26 @@ CREATE TABLE IF NOT EXISTS operation_logs (
   FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS seating_drafts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'applied', 'abandoned')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS seating_draft_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  draft_id INTEGER NOT NULL,
+  seat_id INTEGER NOT NULL,
+  student_id INTEGER NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+  FOREIGN KEY (draft_id) REFERENCES seating_drafts(id) ON DELETE CASCADE,
+  FOREIGN KEY (seat_id) REFERENCES seats(id) ON DELETE CASCADE,
+  FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_seats_session ON seats(session_id);
 CREATE INDEX IF NOT EXISTS idx_students_roster ON students(roster_id);
 CREATE INDEX IF NOT EXISTS idx_assignments_session ON assignments(session_id);
@@ -128,6 +148,8 @@ CREATE INDEX IF NOT EXISTS idx_swap_requests_status ON swap_requests(status);
 CREATE INDEX IF NOT EXISTS idx_attendance_session ON attendance(session_id);
 CREATE INDEX IF NOT EXISTS idx_logs_session ON operation_logs(session_id);
 CREATE INDEX IF NOT EXISTS idx_logs_created ON operation_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_seating_drafts_session ON seating_drafts(session_id);
+CREATE INDEX IF NOT EXISTS idx_seating_draft_items_draft ON seating_draft_items(draft_id);
 `)
 
 export function logOperation(

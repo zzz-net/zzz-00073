@@ -1,4 +1,4 @@
-import type { Session, Seat, Roster, Student, Assignment, SwapRequest, AttendanceRecord, OperationLog } from '@/types'
+import type { Session, Seat, Roster, Student, Assignment, SwapRequest, AttendanceRecord, OperationLog, SeatingDraft, DraftConflict } from '@/types'
 
 const BASE = '/api'
 
@@ -207,4 +207,38 @@ export async function exportAttendance(sessionId: number): Promise<any[]> {
 
 export async function exportLogs(sessionId: number): Promise<any[]> {
   return request<any[]>(`/export/logs?sessionId=${sessionId}`)
+}
+
+export async function fetchDraft(sessionId: number): Promise<SeatingDraft | null> {
+  return request<SeatingDraft | null>(`/sessions/${sessionId}/draft`)
+}
+
+export async function generateDraft(sessionId: number): Promise<SeatingDraft> {
+  return request<SeatingDraft>(`/sessions/${sessionId}/draft/generate`, {
+    method: 'POST',
+  })
+}
+
+export async function saveDraft(sessionId: number, items: { seat_id: number; student_id: number }[]): Promise<SeatingDraft> {
+  return request<SeatingDraft>(`/sessions/${sessionId}/draft`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items }),
+  })
+}
+
+export async function fetchDraftConflicts(sessionId: number): Promise<DraftConflict[]> {
+  return request<DraftConflict[]>(`/sessions/${sessionId}/draft/conflicts`)
+}
+
+export async function applyDraft(sessionId: number): Promise<{ applied: number; seats: Seat[] }> {
+  return request<{ applied: number; seats: Seat[] }>(`/sessions/${sessionId}/draft/apply`, {
+    method: 'POST',
+  })
+}
+
+export async function abandonDraft(sessionId: number): Promise<void> {
+  await request(`/sessions/${sessionId}/draft/abandon`, {
+    method: 'POST',
+  })
 }

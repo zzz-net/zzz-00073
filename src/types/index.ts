@@ -101,3 +101,37 @@ export interface OperationLog {
   details: string
   created_at: string
 }
+
+export interface DraftItem {
+  id: number
+  draft_id: number
+  seat_id: number
+  student_id: number
+  seat_number: string
+  row_num: number
+  col_num: number
+  student_no: string
+  student_name: string
+  class_name: string
+  group_name: string
+  created_at: string
+}
+
+export interface SeatingDraft {
+  id: number
+  session_id: number
+  status: 'active' | 'applied' | 'abandoned'
+  created_at: string
+  updated_at: string
+  items: DraftItem[]
+}
+
+export interface DraftConflict {
+  type: 'duplicate_student' | 'seat_occupied' | 'student_not_in_roster' | 'duplicate_seat'
+  seat_id?: number
+  seat_number?: string
+  student_id?: number
+  student_no?: string
+  student_name?: string
+  reason: string
+}

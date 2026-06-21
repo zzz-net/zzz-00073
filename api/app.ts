@@ -12,6 +12,7 @@ import swapRequestRoutes from './routes/swapRequests.js'
 import attendanceRoutes from './routes/attendance.js'
 import logRoutes from './routes/logs.js'
 import exportRoutes from './routes/export.js'
+import seatingDraftRoutes from './routes/seatingDrafts.js'
 
 dotenv.config()
 
@@ -22,6 +23,7 @@ app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
 app.use('/api/sessions', sessionRoutes)
+app.use('/api/sessions/:sessionId/draft', seatingDraftRoutes)
 app.use('/api/rosters', rosterRoutes)
 app.use('/api/assignments', assignmentRoutes)
 app.use('/api/swap-requests', swapRequestRoutes)
