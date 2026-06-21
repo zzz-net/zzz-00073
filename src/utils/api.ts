@@ -8,6 +8,7 @@ interface ApiResponse<T> {
   error?: string
   message?: string
   duplicates?: string[]
+  conflicts?: DraftConflict[]
 }
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
@@ -16,6 +17,7 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
   if (!res.ok || !body.success) {
     const err = new Error(body.error || body.message || `HTTP ${res.status}`)
     ;(err as any).duplicates = body.duplicates
+    ;(err as any).conflicts = body.conflicts
     throw err
   }
   return body.data

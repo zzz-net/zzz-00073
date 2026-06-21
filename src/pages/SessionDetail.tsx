@@ -40,6 +40,7 @@ const opTypeLabels: Record<string, string> = {
   generate_draft: '生成草稿',
   update_draft: '更新草稿',
   apply_draft: '应用草稿',
+  apply_draft_failed: '应用草稿失败',
   abandon_draft: '放弃草稿',
 }
 
@@ -212,6 +213,9 @@ export default function SessionDetail() {
       setDraftConflicts(conflicts)
       toast('草稿已保存', 'success')
     } catch (e: any) {
+      if (e.conflicts) {
+        setDraftConflicts(e.conflicts)
+      }
       toast(e.message, 'error')
     }
   }
@@ -477,6 +481,18 @@ export default function SessionDetail() {
 
       {activeTab === 'seats' && draftMode && (
         <div className="space-y-4">
+          {draft && draft.roster_valid === false && (
+            <div className="bg-red-50 border-2 border-red-400 rounded-xl p-4 flex items-start gap-3">
+              <AlertTriangle className="w-6 h-6 text-red-600 shrink-0 mt-0.5" />
+              <div>
+                <h3 className="text-sm font-bold text-red-800 mb-1">名单状态异常</h3>
+                <p className="text-sm text-red-700">
+                  {draft.roster_invalid_reason || '当前名单无效'}，草稿中的学生没有有效名单归属。
+                  请先重新绑定名单后再进行保存或应用操作。
+                </p>
+              </div>
+            </div>
+          )}
           <div className="bg-white rounded-xl border border-slate-200 p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-3">
@@ -496,14 +512,15 @@ export default function SessionDetail() {
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleGenerateDraft}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-violet-500 hover:bg-violet-600 text-white rounded-lg transition-colors"
+                  disabled={!session?.roster_id}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-violet-500 hover:bg-violet-600 disabled:opacity-50 text-white rounded-lg transition-colors"
                 >
                   <Sparkles className="w-4 h-4" />
                   批量生成
                 </button>
                 <button
                   onClick={handleSaveDraft}
-                  disabled={!draft || !draftDirty}
+                  disabled={!draft || !draftDirty || draft?.roster_valid === false}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-cyan-500 hover:bg-cyan-600 disabled:opacity-50 text-white rounded-lg transition-colors"
                 >
                   <Save className="w-4 h-4" />
@@ -511,7 +528,7 @@ export default function SessionDetail() {
                 </button>
                 <button
                   onClick={handleApplyDraft}
-                  disabled={!draft || draft.items.length === 0 || draftConflicts.length > 0}
+                  disabled={!draft || draft.items.length === 0 || draftConflicts.length > 0 || draft?.roster_valid === false}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-sm bg-emerald-500 hover:bg-emerald-600 disabled:opacity-50 text-white rounded-lg transition-colors"
                 >
                   <Play className="w-4 h-4" />

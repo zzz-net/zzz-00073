@@ -704,6 +704,244 @@ tests.push({ name: 'DRAFT_DUPLICATE_STUDENT_CONFLICT: duplicate student in draft
   console.log('✅ duplicate_student conflict correctly detected')
 }})
 
+tests.push({ name: 'REGRESSION_CREATE_ROSTER2_FOR_UNBIND_TEST: create second roster for unbind scenario', fn: async () => {
+  const students = []
+  const names = ['赵六','钱七','孙八','周九','吴十']
+  for (let i = 0; i < 5; i++) {
+    students.push({
+      student_no: `2025${String(i+1).padStart(3,'0')}`,
+      name: names[i],
+      class_name: '计算机2班',
+      group_name: 'B组',
+    })
+  }
+  const r = await req('/api/rosters/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: '2024级计算机2班(测试解绑)', students }),
+  })
+  assert(r.body.success === true, 'roster2 imported')
+  globalThis.roster2Id = r.body.data.id
+  globalThis.roster2Students = await req(`/api/rosters/${r.body.data.id}/students`).then(x => x.body.data)
+}})
+
+tests.push({ name: 'REGRESSION_DRAFT_ROSTER_UNBOUND: generate draft then unbind roster, apply blocked, no dirty data', fn: async () => {
+  const r = await req('/api/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: '解绑名单回归测试专场',
+      date: '2026-07-02',
+      timeStart: '10:00',
+      timeEnd: '12:00',
+      rows: 3,
+      cols: 4,
+      rosterId: globalThis.rosterId,
+    }),
+  })
+  assert(r.body.success === true, 'unbind test session created with roster')
+  const sessionId = r.body.data.id
+  globalThis.unbindTestSessionId = sessionId
+
+  const genR = await req(`/api/sessions/${sessionId}/draft/generate`, { method: 'POST' })
+  assert(genR.body.success === true, 'draft generated successfully')
+  assert(genR.body.data.roster_valid === true, 'roster_valid is true right after generate')
+  const draftId = genR.body.data.id
+
+  const getR = await req(`/api/sessions/${sessionId}/draft`)
+  assert(getR.body.success === true, 'get draft ok')
+  assert(getR.body.data.roster_valid === true, 'roster_valid=true in GET')
+  assert(getR.body.data.roster_invalid_reason === null, 'roster_invalid_reason is null')
+
+  const unbindR = await req(`/api/sessions/${sessionId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rosterId: null }),
+  })
+  assert(unbindR.body.success === true, 'roster unbound from session')
+
+  const getAfterUnbind = await req(`/api/sessions/${sessionId}/draft`)
+  assert(getAfterUnbind.body.success === true, 'get draft after unbind ok')
+  assert(getAfterUnbind.body.data.roster_valid === false, 'roster_valid=false after unbind')
+  assert(getAfterUnbind.body.data.roster_invalid_reason !== null, 'roster_invalid_reason is set')
+  assert(getAfterUnbind.body.data.roster_invalid_reason.includes('未绑定'), 'reason mentions unbound')
+
+  const conflictsAfterUnbind = await req(`/api/sessions/${sessionId}/draft/conflicts`)
+  assert(conflictsAfterUnbind.body.success === true, 'conflicts fetched after unbind')
+  assert(conflictsAfterUnbind.body.data.length > 0, 'conflicts detected after unbind')
+  const rosterUnboundConflicts = conflictsAfterUnbind.body.data.filter(c => c.type === 'roster_unbound')
+  assert(rosterUnboundConflicts.length > 0, 'roster_unbound conflict type exists')
+  assert(rosterUnboundConflicts[0].reason.includes('已解绑名单') || rosterUnboundConflicts[0].reason.includes('无有效名单'), 'reason is descriptive for admin')
+
+  const assignmentsBefore = await req(`/api/sessions/${sessionId}/seats`)
+  const occupiedBefore = assignmentsBefore.body.data.filter(s => s.status === 'occupied').length
+
+  const applyR = await req(`/api/sessions/${sessionId}/draft/apply`, { method: 'POST' })
+  assert(applyR.status === 409, 'apply after unbind returns 409')
+  assert(applyR.body.success === false, 'apply after unbind fails')
+  assert(Array.isArray(applyR.body.conflicts), 'conflicts array returned on apply fail')
+  assert(applyR.body.conflicts.length > 0, 'conflicts in response body')
+
+  const assignmentsAfter = await req(`/api/sessions/${sessionId}/seats`)
+  const occupiedAfter = assignmentsAfter.body.data.filter(s => s.status === 'occupied').length
+  assert(occupiedAfter === occupiedBefore, 'NO dirty assignments written on failed apply')
+
+  const attendanceAfter = await req(`/api/attendance?sessionId=${sessionId}`)
+  assert(attendanceAfter.body.success === true, 'attendance fetch ok')
+  assert(attendanceAfter.body.data.length === 0, 'NO dirty attendance records written on failed apply')
+
+  const logsR = await req(`/api/logs?sessionId=${sessionId}`)
+  const applyFailLog = logsR.body.data.find(l => l.operation_type === 'apply_draft_failed')
+  assert(applyFailLog, 'apply_draft_failed log exists')
+  assert(applyFailLog.details.includes('未绑定名单'), 'log reason mentions unbound roster')
+
+  console.log('✅ Draft apply blocked after roster unbind - no dirty assignments/attendance, log recorded')
+}})
+
+tests.push({ name: 'REGRESSION_DRAFT_SAVE_AFTER_UNBIND: save draft blocked after roster unbound', fn: async () => {
+  const sessionId = globalThis.unbindTestSessionId
+  const seats = await req(`/api/sessions/${sessionId}/seats`)
+  const a1 = seats.body.data.find(s => s.seat_number === 'A1')
+  const st1 = globalThis.students[0]
+
+  const saveR = await req(`/api/sessions/${sessionId}/draft`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items: [{ seat_id: a1.id, student_id: st1.id }] }),
+  })
+  assert(saveR.status === 400, 'save draft returns 400 after unbind')
+  assert(saveR.body.success === false, 'save draft fails after unbind')
+  assert(Array.isArray(saveR.body.conflicts), 'conflicts returned on save failure')
+  assert(saveR.body.conflicts.length > 0, 'conflicts present')
+  assert(saveR.body.conflicts[0].type === 'roster_unbound', 'conflict type is roster_unbound')
+  console.log('✅ Save draft correctly blocked after roster unbind')
+}})
+
+tests.push({ name: 'REGRESSION_DRAFT_STUDENT_NOT_IN_ROSTER: switching roster makes old students invalid', fn: async () => {
+  const r = await req('/api/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: '换名单冲突测试专场',
+      date: '2026-07-03',
+      timeStart: '13:00',
+      timeEnd: '15:00',
+      rows: 3,
+      cols: 4,
+      rosterId: globalThis.rosterId,
+    }),
+  })
+  assert(r.body.success === true, 'swap roster session created')
+  const sessionId = r.body.data.id
+
+  const genR = await req(`/api/sessions/${sessionId}/draft/generate`, { method: 'POST' })
+  assert(genR.body.success === true, 'draft generated with roster1')
+
+  const switchR = await req(`/api/sessions/${sessionId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rosterId: globalThis.roster2Id }),
+  })
+  assert(switchR.body.success === true, 'switched to roster2')
+
+  const conflictsR = await req(`/api/sessions/${sessionId}/draft/conflicts`)
+  assert(conflictsR.body.success === true, 'conflicts fetched')
+  const wrongRosterItems = conflictsR.body.data.filter(c => c.type === 'student_not_in_roster')
+  assert(wrongRosterItems.length > 0, 'student_not_in_roster conflicts after switching roster')
+  assert(wrongRosterItems[0].reason.includes('不属于当前绑定的名单'), 'reason is clear for admin')
+
+  const applyR = await req(`/api/sessions/${sessionId}/draft/apply`, { method: 'POST' })
+  assert(applyR.status === 409, 'apply blocked with wrong roster students')
+  const logsR = await req(`/api/logs?sessionId=${sessionId}`)
+  const failLog = logsR.body.data.find(l => l.operation_type === 'apply_draft_failed')
+  assert(failLog, 'apply_draft_failed log recorded for wrong roster')
+
+  console.log('✅ Student_not_in_roster conflict detected after switching roster, apply blocked')
+}})
+
+tests.push({ name: 'REGRESSION_DRAFT_PERSISTENCE_AFTER_REFRESH: draft survives page refresh & comes back with roster_valid', fn: async () => {
+  const r = await req('/api/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: '持久化验证专场',
+      date: '2026-07-04',
+      timeStart: '14:00',
+      timeEnd: '16:00',
+      rows: 2,
+      cols: 3,
+      rosterId: globalThis.rosterId,
+    }),
+  })
+  assert(r.body.success === true, 'persistence session created')
+  const sessionId = r.body.data.id
+
+  const seats = await req(`/api/sessions/${sessionId}/seats`)
+  const a1 = seats.body.data.find(s => s.seat_number === 'A1')
+  const st1 = globalThis.students[0]
+  const st2 = globalThis.students[1]
+
+  const saveR = await req(`/api/sessions/${sessionId}/draft`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      items: [
+        { seat_id: a1.id, student_id: st1.id },
+      ]
+    }),
+  })
+  assert(saveR.body.success === true, 'initial draft saved')
+  const initialItems = saveR.body.data.items.length
+
+  const get1 = await req(`/api/sessions/${sessionId}/draft`)
+  assert(get1.body.data !== null, 'draft exists (simulate first page load)')
+  assert(get1.body.data.roster_valid === true, 'roster_valid=true on first load')
+  assert(get1.body.data.items.length === initialItems, 'item count matches')
+
+  const get2 = await req(`/api/sessions/${sessionId}/draft`)
+  assert(get2.body.data !== null, 'draft still exists on second fetch (simulating refresh)')
+  assert(get2.body.data.items.length === initialItems, 'same items after refresh')
+  assert(get2.body.data.status === 'active', 'status still active')
+
+  await req(`/api/sessions/${sessionId}/draft/abandon`, { method: 'POST' })
+  const getAfterAbandon = await req(`/api/sessions/${sessionId}/draft`)
+  assert(getAfterAbandon.body.data === null, 'no active draft after abandon')
+  const logsAbandon = await req(`/api/logs?sessionId=${sessionId}`)
+  const abandonLog = logsAbandon.body.data.find(l => l.operation_type === 'abandon_draft')
+  assert(abandonLog, 'abandon_draft log recorded')
+
+  console.log('✅ Draft persistence verified - survives refresh, abandon clears it, logs recorded')
+}})
+
+tests.push({ name: 'REGRESSION_EXPORT_AND_SINGLE_ASSIGN_UNBROKEN: export and single seat assign still work after all changes', fn: async () => {
+  const sessionId = globalThis.sessionId
+
+  const exportR = await req(`/api/export/seats?sessionId=${sessionId}`)
+  assert(exportR.body.success === true, 'export seats ok')
+  assert(exportR.body.data.length > 0, 'export has rows')
+  const cols = Object.keys(exportR.body.data[0])
+  assert(cols.includes('学号'), 'export still has 学号 column')
+  assert(cols.includes('席位号'), 'export still has 席位号 column')
+
+  const exportAtt = await req(`/api/export/attendance?sessionId=${sessionId}`)
+  assert(exportAtt.body.success === true, 'export attendance ok')
+
+  const seats = await req(`/api/sessions/${sessionId}/seats`)
+  const freeSeat = seats.body.data.find(s => s.status === 'free')
+  if (freeSeat && globalThis.students.length > 6) {
+    const st7 = globalThis.students[6]
+    const assignR = await req('/api/assignments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId, seatId: freeSeat.id, studentId: st7.id }),
+    })
+    assert(assignR.body.success === true, 'single seat assignment still works after draft changes')
+    assert(assignR.body.data.seat_number === freeSeat.seat_number, 'correct seat')
+  }
+
+  console.log('✅ Exports and single seat assignment still work - no regression')
+}})
+
 async function main() {
   console.log('\n=== 实验排座系统 API 验证测试 ===\n')
   for (const t of tests) {

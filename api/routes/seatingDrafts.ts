@@ -38,7 +38,29 @@ router.get('/', (req: Request, res: Response) => {
   }
 
   const items = getDraftItems(draft.id)
-  res.json({ success: true, data: { ...draft, items } })
+
+  let rosterValid = true
+  let rosterInvalidReason: string | null = null
+  if (!session.roster_id) {
+    rosterValid = false
+    rosterInvalidReason = '场次未绑定名单'
+  } else {
+    const rosterExists = db.prepare('SELECT id, name FROM rosters WHERE id = ?').get(session.roster_id)
+    if (!rosterExists) {
+      rosterValid = false
+      rosterInvalidReason = '绑定的名单已被删除'
+    }
+  }
+
+  res.json({
+    success: true,
+    data: {
+      ...draft,
+      items,
+      roster_valid: rosterValid,
+      roster_invalid_reason: rosterInvalidReason,
+    }
+  })
 })
 
 router.post('/generate', (req: Request, res: Response) => {
@@ -114,7 +136,15 @@ router.post('/generate', (req: Request, res: Response) => {
 
   const draft = db.prepare('SELECT * FROM seating_drafts WHERE id = ?').get(draftId) as any
   const items = getDraftItems(draftId)
-  res.json({ success: true, data: { ...draft, items } })
+  res.json({
+    success: true,
+    data: {
+      ...draft,
+      items,
+      roster_valid: true,
+      roster_invalid_reason: null,
+    }
+  })
 })
 
 router.put('/', (req: Request, res: Response) => {
@@ -129,6 +159,69 @@ router.put('/', (req: Request, res: Response) => {
   const session = db.prepare('SELECT * FROM sessions WHERE id = ?').get(sessionId) as any
   if (!session) {
     res.status(404).json({ success: false, error: '场次不存在' })
+    return
+  }
+
+  if (!session.roster_id) {
+    res.status(400).json({
+      success: false,
+      error: '场次未绑定名单，无法保存草稿，请先绑定名单',
+      conflicts: items.map((item: any) => ({
+        type: 'roster_unbound',
+        seat_id: item.seat_id,
+        student_id: item.student_id,
+        reason: '场次未绑定名单，无法分配学生'
+      }))
+    })
+    return
+  }
+
+  const rosterExists = db.prepare('SELECT id FROM rosters WHERE id = ?').get(session.roster_id)
+  if (!rosterExists) {
+    res.status(400).json({
+      success: false,
+      error: '绑定的名单已被删除，无法保存草稿，请重新绑定名单',
+      conflicts: items.map((item: any) => ({
+        type: 'roster_unbound',
+        seat_id: item.seat_id,
+        student_id: item.student_id,
+        reason: '绑定的名单已被删除'
+      }))
+    })
+    return
+  }
+
+  const invalidStudents: ConflictItem[] = []
+  for (const item of items) {
+    if (item.seat_id && item.student_id) {
+      const student = db.prepare(
+        'SELECT id, student_no, name, roster_id FROM students WHERE id = ?'
+      ).get(item.student_id) as any
+      if (!student) {
+        invalidStudents.push({
+          type: 'student_not_in_roster',
+          seat_id: item.seat_id,
+          student_id: item.student_id,
+          reason: `学生ID ${item.student_id} 不存在`
+        })
+      } else if (student.roster_id !== session.roster_id) {
+        invalidStudents.push({
+          type: 'student_not_in_roster',
+          seat_id: item.seat_id,
+          student_id: item.student_id,
+          student_no: student.student_no,
+          student_name: student.name,
+          reason: `学生 ${student.name}(${student.student_no}) 不属于当前绑定的名单`
+        })
+      }
+    }
+  }
+  if (invalidStudents.length > 0) {
+    res.status(400).json({
+      success: false,
+      error: `存在 ${invalidStudents.length} 名学生不属于当前绑定的名单`,
+      conflicts: invalidStudents
+    })
     return
   }
 
@@ -170,11 +263,19 @@ router.put('/', (req: Request, res: Response) => {
 
   const updatedDraft = db.prepare('SELECT * FROM seating_drafts WHERE id = ?').get(draft.id) as any
   const updatedItems = getDraftItems(draft.id)
-  res.json({ success: true, data: { ...updatedDraft, items: updatedItems } })
+  res.json({
+    success: true,
+    data: {
+      ...updatedDraft,
+      items: updatedItems,
+      roster_valid: true,
+      roster_invalid_reason: null,
+    }
+  })
 })
 
 interface ConflictItem {
-  type: 'duplicate_student' | 'seat_occupied' | 'student_not_in_roster' | 'duplicate_seat'
+  type: 'duplicate_student' | 'seat_occupied' | 'student_not_in_roster' | 'duplicate_seat' | 'roster_unbound'
   seat_id?: number
   seat_number?: string
   student_id?: number
@@ -247,18 +348,45 @@ function checkConflicts(sessionId: number, draftId: number): ConflictItem[] {
     }
   }
 
-  if (session.roster_id) {
+  if (!session.roster_id) {
     for (const item of draftItems) {
-      if (item.roster_id !== session.roster_id) {
+      conflicts.push({
+        type: 'roster_unbound',
+        seat_id: item.seat_id,
+        seat_number: item.seat_number,
+        student_id: item.student_id,
+        student_no: item.student_no,
+        student_name: item.student_name,
+        reason: `场次已解绑名单，学生 ${item.student_name}(${item.student_no}) 无有效名单归属，请重新绑定名单后再操作`
+      })
+    }
+  } else {
+    const rosterExists = db.prepare('SELECT id FROM rosters WHERE id = ?').get(session.roster_id)
+    if (!rosterExists) {
+      for (const item of draftItems) {
         conflicts.push({
-          type: 'student_not_in_roster',
+          type: 'roster_unbound',
           seat_id: item.seat_id,
           seat_number: item.seat_number,
           student_id: item.student_id,
           student_no: item.student_no,
           student_name: item.student_name,
-          reason: `学生 ${item.student_name}(${item.student_no}) 不属于当前绑定的名单`
+          reason: `绑定的名单已被删除，学生 ${item.student_name}(${item.student_no}) 无有效名单归属，请重新绑定名单后再操作`
         })
+      }
+    } else {
+      for (const item of draftItems) {
+        if (item.roster_id !== session.roster_id) {
+          conflicts.push({
+            type: 'student_not_in_roster',
+            seat_id: item.seat_id,
+            seat_number: item.seat_number,
+            student_id: item.student_id,
+            student_no: item.student_no,
+            student_name: item.student_name,
+            reason: `学生 ${item.student_name}(${item.student_no}) 不属于当前绑定的名单，请从草稿中移除或更换名单`
+          })
+        }
       }
     }
   }
@@ -294,8 +422,54 @@ router.post('/apply', (req: Request, res: Response) => {
     return
   }
 
+  if (!session.roster_id) {
+    logOperation(
+      Number(sessionId),
+      'apply_draft_failed',
+      'admin',
+      'admin',
+      `应用草稿失败 #${draft.id}：场次未绑定名单`
+    )
+    res.status(409).json({
+      success: false,
+      error: '场次未绑定名单，无法应用草稿，请先绑定名单',
+      conflicts: [{
+        type: 'roster_unbound',
+        reason: '场次未绑定名单'
+      }]
+    })
+    return
+  }
+
+  const rosterExists = db.prepare('SELECT id FROM rosters WHERE id = ?').get(session.roster_id)
+  if (!rosterExists) {
+    logOperation(
+      Number(sessionId),
+      'apply_draft_failed',
+      'admin',
+      'admin',
+      `应用草稿失败 #${draft.id}：绑定的名单已被删除`
+    )
+    res.status(409).json({
+      success: false,
+      error: '绑定的名单已被删除，无法应用草稿，请重新绑定名单',
+      conflicts: [{
+        type: 'roster_unbound',
+        reason: '绑定的名单已被删除'
+      }]
+    })
+    return
+  }
+
   const conflicts = checkConflicts(Number(sessionId), draft.id)
   if (conflicts.length > 0) {
+    logOperation(
+      Number(sessionId),
+      'apply_draft_failed',
+      'admin',
+      'admin',
+      `应用草稿失败 #${draft.id}：存在 ${conflicts.length} 个冲突`
+    )
     res.status(409).json({
       success: false,
       error: '存在冲突，无法应用草稿',
@@ -335,7 +509,25 @@ router.post('/apply', (req: Request, res: Response) => {
     return details
   })
 
-  const details = transaction()
+  let details: string[]
+  try {
+    details = transaction()
+  } catch (err: any) {
+    logOperation(
+      Number(sessionId),
+      'apply_draft_failed',
+      'admin',
+      'admin',
+      `应用草稿失败 #${draft.id}：事务执行错误 - ${err.message}`
+    )
+    res.status(500).json({
+      success: false,
+      error: '应用草稿时发生错误，所有数据已回滚',
+      conflicts: []
+    })
+    return
+  }
+
   logOperation(
     Number(sessionId),
     'apply_draft',

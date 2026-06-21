@@ -124,10 +124,12 @@ export interface SeatingDraft {
   created_at: string
   updated_at: string
   items: DraftItem[]
+  roster_valid?: boolean
+  roster_invalid_reason?: string | null
 }
 
 export interface DraftConflict {
-  type: 'duplicate_student' | 'seat_occupied' | 'student_not_in_roster' | 'duplicate_seat'
+  type: 'duplicate_student' | 'seat_occupied' | 'student_not_in_roster' | 'duplicate_seat' | 'roster_unbound'
   seat_id?: number
   seat_number?: string
   student_id?: number
