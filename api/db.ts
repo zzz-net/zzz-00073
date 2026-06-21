@@ -150,6 +150,52 @@ CREATE INDEX IF NOT EXISTS idx_logs_session ON operation_logs(session_id);
 CREATE INDEX IF NOT EXISTS idx_logs_created ON operation_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_seating_drafts_session ON seating_drafts(session_id);
 CREATE INDEX IF NOT EXISTS idx_seating_draft_items_draft ON seating_draft_items(draft_id);
+
+CREATE TABLE IF NOT EXISTS seating_templates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  remark TEXT NOT NULL DEFAULT '',
+  rows INTEGER NOT NULL,
+  cols INTEGER NOT NULL,
+  roster_id INTEGER,
+  roster_name TEXT,
+  check_in_init_rule TEXT NOT NULL DEFAULT 'not_checked_in',
+  created_by TEXT NOT NULL DEFAULT 'admin',
+  created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS seating_template_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  template_id INTEGER NOT NULL,
+  row_num INTEGER NOT NULL,
+  col_num INTEGER NOT NULL,
+  seat_number TEXT NOT NULL,
+  student_no TEXT NOT NULL,
+  student_name TEXT NOT NULL,
+  class_name TEXT NOT NULL DEFAULT '',
+  group_name TEXT NOT NULL DEFAULT '',
+  FOREIGN KEY (template_id) REFERENCES seating_templates(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS template_apply_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id INTEGER NOT NULL,
+  template_id INTEGER NOT NULL,
+  template_name TEXT NOT NULL,
+  operator TEXT NOT NULL DEFAULT 'admin',
+  operator_role TEXT NOT NULL DEFAULT 'admin' CHECK(operator_role IN ('admin', 'ta')),
+  applied_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime')),
+  rolled_back INTEGER NOT NULL DEFAULT 0,
+  snapshot_before TEXT NOT NULL,
+  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+  FOREIGN KEY (template_id) REFERENCES seating_templates(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_seating_templates_name ON seating_templates(name);
+CREATE INDEX IF NOT EXISTS idx_seating_template_items_template ON seating_template_items(template_id);
+CREATE INDEX IF NOT EXISTS idx_template_snapshots_session ON template_apply_snapshots(session_id);
+CREATE INDEX IF NOT EXISTS idx_template_snapshots_applied ON template_apply_snapshots(applied_at);
 `)
 
 export function logOperation(

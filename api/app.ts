@@ -13,6 +13,7 @@ import attendanceRoutes from './routes/attendance.js'
 import logRoutes from './routes/logs.js'
 import exportRoutes from './routes/export.js'
 import seatingDraftRoutes from './routes/seatingDrafts.js'
+import seatingTemplateRoutes from './routes/seatingTemplates.js'
 
 dotenv.config()
 
@@ -30,6 +31,7 @@ app.use('/api/swap-requests', swapRequestRoutes)
 app.use('/api/attendance', attendanceRoutes)
 app.use('/api/logs', logRoutes)
 app.use('/api/export', exportRoutes)
+app.use('/api/seating-templates', seatingTemplateRoutes)
 
 app.use(
   '/api/health',

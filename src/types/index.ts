@@ -137,3 +137,50 @@ export interface DraftConflict {
   student_name?: string
   reason: string
 }
+
+export interface SeatingTemplateItem {
+  id: number
+  template_id: number
+  row_num: number
+  col_num: number
+  seat_number: string
+  student_no: string
+  student_name: string
+  class_name: string
+  group_name: string
+}
+
+export interface SeatingTemplate {
+  id: number
+  name: string
+  remark: string
+  rows: number
+  cols: number
+  roster_id: number | null
+  roster_name: string | null
+  check_in_init_rule: 'not_checked_in' | 'checked_in' | 'late' | 'absent'
+  created_by: string
+  created_at: string
+  updated_at: string
+  items?: SeatingTemplateItem[]
+  item_count?: number
+}
+
+export interface TemplateApplyConflict {
+  type: 'layout_mismatch' | 'student_not_found' | 'student_not_in_roster' | 'seat_occupied' | 'duplicate_student' | 'duplicate_seat' | 'roster_unbound' | 'permission_denied'
+  seat_number?: string
+  student_no?: string
+  student_name?: string
+  reason: string
+}
+
+export interface TemplateApplySnapshot {
+  id: number
+  session_id: number
+  template_id: number
+  template_name: string
+  operator: string
+  operator_role: 'admin' | 'ta'
+  applied_at: string
+  rolled_back: number
+}

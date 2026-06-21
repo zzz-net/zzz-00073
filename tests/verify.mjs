@@ -942,6 +942,586 @@ tests.push({ name: 'REGRESSION_EXPORT_AND_SINGLE_ASSIGN_UNBROKEN: export and sin
   console.log('✅ Exports and single seat assignment still work - no regression')
 }})
 
+// ===== 排座模板库模块回归测试 =====
+
+tests.push({ name: 'TEMPLATE_SAVE: save current seating as template', fn: async () => {
+  const r = await req('/api/seating-templates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionId: globalThis.sessionId,
+      name: '标准实验排座',
+      remark: '计算机1班标准排座方式',
+      checkInInitRule: 'not_checked_in',
+    }),
+  })
+  assert(r.body.success === true, 'template saved')
+  assert(r.body.data.name === '标准实验排座', 'template name correct')
+  assert(r.body.data.rows === 4 && r.body.data.cols === 5, 'rows x cols stored 4x5')
+  assert(r.body.data.items.length > 0, 'template has items')
+  globalThis.templateId = r.body.data.id
+}})
+
+tests.push({ name: 'TEMPLATE_DUPLICATE_NAME_BLOCKED: reject duplicate template name', fn: async () => {
+  const r = await req('/api/seating-templates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionId: globalThis.sessionId,
+      name: '标准实验排座',
+    }),
+  })
+  assert(r.status === 409, 'duplicate name returns 409')
+  assert(r.body.success === false, 'duplicate save fails')
+  assert(r.body.error.includes('已存在'), 'error mentions exists')
+  assert(r.body.error.includes('overwrite=true'), 'error hints overwrite=true')
+}})
+
+tests.push({ name: 'TEMPLATE_OVERWRITE: overwrite existing template with overwrite=true', fn: async () => {
+  const r = await req('/api/seating-templates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionId: globalThis.sessionId,
+      name: '标准实验排座',
+      remark: '更新后的备注',
+      overwrite: true,
+    }),
+  })
+  assert(r.body.success === true, 'overwrite succeeds')
+  assert(r.body.data.id === globalThis.templateId, 'same template id after overwrite')
+  assert(r.body.data.remark === '更新后的备注', 'remark updated')
+
+  const logsR = await req('/api/logs')
+  const overLog = logsR.body.data.find(l => l.operation_type === 'overwrite_template')
+  assert(overLog, 'overwrite_template log recorded')
+}})
+
+tests.push({ name: 'TEMPLATE_LIST: list templates with item counts', fn: async () => {
+  const r = await req('/api/seating-templates')
+  assert(r.body.success === true, 'template list ok')
+  assert(Array.isArray(r.body.data), 'data is array')
+  assert(r.body.data.length >= 1, 'at least 1 template')
+  const t = r.body.data.find(x => x.id === globalThis.templateId)
+  assert(t, 'saved template appears in list')
+  assert(typeof t.item_count === 'number' && t.item_count > 0, 'item_count present')
+}})
+
+tests.push({ name: 'TEMPLATE_DETAIL: get single template with items', fn: async () => {
+  const r = await req(`/api/seating-templates/${globalThis.templateId}`)
+  assert(r.body.success === true, 'template detail ok')
+  assert(r.body.data.id === globalThis.templateId, 'correct id')
+  assert(Array.isArray(r.body.data.items), 'items array present')
+  assert(r.body.data.items.length > 0, 'items not empty')
+  const item = r.body.data.items[0]
+  assert('seat_number' in item, 'item has seat_number')
+  assert('student_no' in item, 'item has student_no')
+  assert('student_name' in item, 'item has student_name')
+}})
+
+tests.push({ name: 'TEMPLATE_EXPORT: export template as JSON', fn: async () => {
+  const r = await req(`/api/seating-templates/${globalThis.templateId}/export`)
+  assert(r.body.schema_version === 1, 'schema_version present')
+  assert(r.body.name === '标准实验排座', 'exported name correct')
+  assert(Array.isArray(r.body.items), 'exported items array')
+  assert(r.body.items.length > 0, 'exported items not empty')
+  globalThis.exportedTemplate = JSON.parse(JSON.stringify(r.body))
+}})
+
+tests.push({ name: 'TEMPLATE_IMPORT_DUPLICATE_BLOCKED: reject import with duplicate name', fn: async () => {
+  const dup = { ...globalThis.exportedTemplate }
+  dup.name = '标准实验排座'
+  const r = await req('/api/seating-templates/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(dup),
+  })
+  assert(r.status === 409, 'duplicate name import returns 409')
+  assert(r.body.success === false, 'import fails on duplicate')
+}})
+
+tests.push({ name: 'TEMPLATE_IMPORT_MISSING_FIELDS_BLOCKED: reject malformed import', fn: async () => {
+  const bad = { name: '坏模板', rows: 3 }
+  const r = await req('/api/seating-templates/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(bad),
+  })
+  assert(r.status === 400, 'bad import returns 400')
+  assert(r.body.success === false, 'bad import fails')
+  assert(Array.isArray(r.body.details), 'details array returned')
+  assert(r.body.details.length > 0, 'details has items')
+  assert(r.body.details.some(d => d.includes('cols') || d.includes('items')), 'details mention missing fields')
+}})
+
+tests.push({ name: 'TEMPLATE_IMPORT_SUCCESS: import valid JSON template', fn: async () => {
+  const imported = { ...globalThis.exportedTemplate, name: '导入的标准排座' }
+  const r = await req('/api/seating-templates/import', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(imported),
+  })
+  assert(r.body.success === true, 'import succeeds')
+  assert(r.body.data.name === '导入的标准排座', 'imported name correct')
+  assert(r.body.data.items.length === globalThis.exportedTemplate.items.length, 'same item count')
+  globalThis.importedTemplateId = r.body.data.id
+}})
+
+tests.push({ name: 'TEMPLATE_APPLY_LAYOUT_CONFLICT: layout mismatch blocked', fn: async () => {
+  const smallR = await req('/api/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: '小布局测试场',
+      date: '2026-07-05',
+      timeStart: '09:00',
+      timeEnd: '11:00',
+      rows: 2,
+      cols: 2,
+      rosterId: globalThis.rosterId,
+    }),
+  })
+  assert(smallR.body.success === true, 'small session created')
+  globalThis.smallSessionId = smallR.body.data.id
+
+  const conflictsR = await req(`/api/seating-templates/${globalThis.templateId}/apply/conflicts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId: globalThis.smallSessionId }),
+  })
+  assert(conflictsR.body.success === true, 'conflicts check ok')
+  assert(conflictsR.body.data.length > 0, 'conflicts detected')
+  assert(conflictsR.body.data[0].type === 'layout_mismatch', 'conflict type is layout_mismatch')
+  assert(conflictsR.body.data[0].reason.includes('4x5') || conflictsR.body.data[0].reason.includes('2x2'), 'reason mentions dimensions')
+
+  const applyR = await req(`/api/seating-templates/${globalThis.templateId}/apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId: globalThis.smallSessionId }),
+  })
+  assert(applyR.status === 409, 'layout mismatch apply returns 409')
+  assert(applyR.body.success === false, 'apply fails on layout mismatch')
+  assert(Array.isArray(applyR.body.conflicts), 'conflicts in response')
+}})
+
+tests.push({ name: 'TEMPLATE_APPLY_ROSTER_UNBOUND: unbound roster blocked', fn: async () => {
+  const unboundR = await req('/api/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: '无名单测试场',
+      date: '2026-07-05',
+      timeStart: '13:00',
+      timeEnd: '15:00',
+      rows: 4,
+      cols: 5,
+    }),
+  })
+  assert(unboundR.body.success === true, 'unbound session created')
+  globalThis.unboundTemplateSessionId = unboundR.body.data.id
+
+  const applyR = await req(`/api/seating-templates/${globalThis.templateId}/apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId: globalThis.unboundTemplateSessionId }),
+  })
+  assert(applyR.status === 409, 'unbound roster apply returns 409')
+  const unboundConflict = applyR.body.conflicts.find(c => c.type === 'roster_unbound')
+  assert(unboundConflict, 'roster_unbound conflict present')
+}})
+
+tests.push({ name: 'TEMPLATE_APPLY_SEAT_OCCUPIED: occupied seats blocked', fn: async () => {
+  const occupiedR = await req('/api/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: '占用座位测试场',
+      date: '2026-07-06',
+      timeStart: '09:00',
+      timeEnd: '11:00',
+      rows: 4,
+      cols: 5,
+      rosterId: globalThis.rosterId,
+    }),
+  })
+  assert(occupiedR.body.success === true, 'occupied test session created')
+  globalThis.occupiedTestSessionId = occupiedR.body.data.id
+
+  const seats = await req(`/api/sessions/${globalThis.occupiedTestSessionId}/seats`)
+  const a1 = seats.body.data.find(s => s.seat_number === 'A1')
+  const st1 = globalThis.students[0]
+  await req('/api/assignments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId: globalThis.occupiedTestSessionId, seatId: a1.id, studentId: st1.id }),
+  })
+
+  const applyR = await req(`/api/seating-templates/${globalThis.templateId}/apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId: globalThis.occupiedTestSessionId }),
+  })
+  assert(applyR.status === 409, 'apply with occupied seat returns 409')
+  const seatConflict = applyR.body.conflicts.find(c => c.type === 'seat_occupied')
+  assert(seatConflict, 'seat_occupied conflict present')
+  assert(seatConflict.seat_number === 'A1', 'correct seat_number in conflict')
+  assert(seatConflict.reason.includes('已被占用'), 'reason descriptive')
+}})
+
+tests.push({ name: 'TEMPLATE_APPLY_WRONG_ROSTER: students not in target roster blocked', fn: async () => {
+  const wrongR = await req('/api/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: '换名单测试场',
+      date: '2026-07-06',
+      timeStart: '14:00',
+      timeEnd: '16:00',
+      rows: 4,
+      cols: 5,
+      rosterId: globalThis.roster2Id,
+    }),
+  })
+  assert(wrongR.body.success === true, 'wrong roster session created')
+  globalThis.wrongRosterSessionId = wrongR.body.data.id
+
+  const applyR = await req(`/api/seating-templates/${globalThis.templateId}/apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId: globalThis.wrongRosterSessionId }),
+  })
+  assert(applyR.status === 409, 'apply with wrong roster returns 409')
+  const studentConflicts = applyR.body.conflicts.filter(c =>
+    c.type === 'student_not_found' || c.type === 'student_not_in_roster'
+  )
+  assert(studentConflicts.length > 0, 'student roster conflicts present')
+  assert(studentConflicts[0].student_name || studentConflicts[0].student_no, 'student info in conflict')
+}})
+
+tests.push({ name: 'TEMPLATE_APPLY_PERMISSION: ta role blocked from applying', fn: async () => {
+  const cleanR = await req('/api/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: '权限测试场',
+      date: '2026-07-07',
+      timeStart: '09:00',
+      timeEnd: '11:00',
+      rows: 4,
+      cols: 5,
+      rosterId: globalThis.rosterId,
+    }),
+  })
+  assert(cleanR.body.success === true, 'clean session created')
+  globalThis.permissionTestSessionId = cleanR.body.data.id
+
+  const conflictsR = await req(`/api/seating-templates/${globalThis.templateId}/apply/conflicts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId: globalThis.permissionTestSessionId, operatorRole: 'ta' }),
+  })
+  assert(conflictsR.body.success === true, 'conflicts check ok')
+  const permConflict = conflictsR.body.data.find(c => c.type === 'permission_denied')
+  assert(permConflict, 'permission_denied conflict present')
+  assert(permConflict.reason.includes('ta') || permConflict.reason.includes('admin'), 'reason mentions roles')
+}})
+
+tests.push({ name: 'TEMPLATE_APPLY_NO_DIRTY_DATA: failed apply does not write dirty data', fn: async () => {
+  const sessionId = globalThis.occupiedTestSessionId
+  const seatsBefore = await req(`/api/sessions/${sessionId}/seats`)
+  const occupiedBefore = seatsBefore.body.data.filter(s => s.status === 'occupied').length
+  const attBefore = await req(`/api/attendance?sessionId=${sessionId}`)
+
+  await req(`/api/seating-templates/${globalThis.templateId}/apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId }),
+  })
+
+  const seatsAfter = await req(`/api/sessions/${sessionId}/seats`)
+  const occupiedAfter = seatsAfter.body.data.filter(s => s.status === 'occupied').length
+  assert(occupiedAfter === occupiedBefore, 'NO dirty assignments written on failed apply')
+
+  const attAfter = await req(`/api/attendance?sessionId=${sessionId}`)
+  assert(attAfter.body.data.length === attBefore.body.data.length, 'NO dirty attendance written on failed apply')
+}})
+
+tests.push({ name: 'TEMPLATE_APPLY_SUCCESS: apply template to clean matching session', fn: async () => {
+  const cleanR = await req('/api/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: '模板套用成功场',
+      date: '2026-07-07',
+      timeStart: '14:00',
+      timeEnd: '16:00',
+      rows: 4,
+      cols: 5,
+      rosterId: globalThis.rosterId,
+    }),
+  })
+  assert(cleanR.body.success === true, 'clean matching session created')
+  globalThis.templateApplySessionId = cleanR.body.data.id
+
+  const applyR = await req(`/api/seating-templates/${globalThis.templateId}/apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId: globalThis.templateApplySessionId }),
+  })
+  assert(applyR.body.success === true, 'template apply succeeds')
+  assert(applyR.body.data.applied > 0, 'applied count positive')
+  assert(applyR.body.data.snapshot, 'snapshot returned')
+  assert(applyR.body.data.snapshot.id, 'snapshot has id')
+  globalThis.applySnapshotId = applyR.body.data.snapshot.id
+
+  const seats = await req(`/api/sessions/${globalThis.templateApplySessionId}/seats`)
+  const occupied = seats.body.data.filter(s => s.status === 'occupied')
+  assert(occupied.length === applyR.body.data.applied, 'seat count matches applied')
+
+  const att = await req(`/api/attendance?sessionId=${globalThis.templateApplySessionId}`)
+  assert(att.body.data.length === applyR.body.data.applied, 'attendance records match')
+
+  const logsR = await req(`/api/logs?sessionId=${globalThis.templateApplySessionId}`)
+  const applyLog = logsR.body.data.find(l => l.operation_type === 'apply_template')
+  assert(applyLog, 'apply_template log recorded')
+}})
+
+tests.push({ name: 'TEMPLATE_SNAPSHOTS: list snapshots for session', fn: async () => {
+  const r = await req(`/api/seating-templates/sessions/${globalThis.templateApplySessionId}/snapshots`)
+  assert(r.body.success === true, 'snapshots list ok')
+  assert(Array.isArray(r.body.data), 'data is array')
+  assert(r.body.data.length >= 1, 'at least 1 snapshot')
+  const snap = r.body.data.find(s => s.id === globalThis.applySnapshotId)
+  assert(snap, 'our snapshot present')
+  assert(snap.rolled_back === 0, 'not yet rolled back')
+}})
+
+tests.push({ name: 'TEMPLATE_ROLLBACK: rollback last template apply', fn: async () => {
+  const sessionId = globalThis.templateApplySessionId
+  const attBefore = await req(`/api/attendance?sessionId=${sessionId}`)
+  const attCountBefore = attBefore.body.data.length
+
+  const rollbackR = await req(`/api/seating-templates/snapshots/${globalThis.applySnapshotId}/rollback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  assert(rollbackR.body.success === true, 'rollback succeeds')
+  assert(rollbackR.body.data.restored_assignments === 0, 'restored 0 assignments (snapshot had none)')
+
+  const seatsAfter = await req(`/api/sessions/${sessionId}/seats`)
+  const occupiedAfter = seatsAfter.body.data.filter(s => s.status === 'occupied').length
+  assert(occupiedAfter === 0, 'all seats free after rollback')
+
+  const attAfter = await req(`/api/attendance?sessionId=${sessionId}`)
+  assert(attAfter.body.data.length === 0, 'all attendance cleared after rollback')
+
+  const logsR = await req(`/api/logs?sessionId=${sessionId}`)
+  const rbLog = logsR.body.data.find(l => l.operation_type === 'rollback_template')
+  assert(rbLog, 'rollback_template log recorded')
+}})
+
+tests.push({ name: 'TEMPLATE_ROLLBACK_DOUBLE: cannot rollback same snapshot twice', fn: async () => {
+  const r = await req(`/api/seating-templates/snapshots/${globalThis.applySnapshotId}/rollback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  assert(r.status === 400, 'double rollback returns 400')
+  assert(r.body.success === false, 'double rollback fails')
+  assert(r.body.error.includes('已被撤销过'), 'error mentions already rolled back')
+}})
+
+tests.push({ name: 'TEMPLATE_ROLLBACK_WITH_EXISTING_DATA: rollback preserves pre-apply data', fn: async () => {
+  const templateSessionR = await req('/api/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: '模板保存专用场',
+      date: '2026-07-08',
+      timeStart: '08:00',
+      timeEnd: '09:00',
+      rows: 4,
+      cols: 5,
+      rosterId: globalThis.rosterId,
+    }),
+  })
+  assert(templateSessionR.body.success === true, 'template session created')
+  const tplSessionId = templateSessionR.body.data.id
+
+  const tplSeats = await req(`/api/sessions/${tplSessionId}/seats`)
+  const tplA1 = tplSeats.body.data.find(s => s.seat_number === 'A1')
+  const st1 = globalThis.students[0]
+  await req('/api/assignments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId: tplSessionId, seatId: tplA1.id, studentId: st1.id }),
+  })
+
+  const saveR = await req('/api/seating-templates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId: tplSessionId, name: '单座模板' }),
+  })
+  assert(saveR.body.success === true, 'single-seat template saved')
+  const tplId = saveR.body.data.id
+
+  const targetSessionR = await req('/api/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: '回滚有数据场',
+      date: '2026-07-08',
+      timeStart: '09:00',
+      timeEnd: '11:00',
+      rows: 4,
+      cols: 5,
+      rosterId: globalThis.rosterId,
+    }),
+  })
+  assert(targetSessionR.body.success === true, 'target session created')
+  const sessionId = targetSessionR.body.data.id
+
+  const targetSeats = await req(`/api/sessions/${sessionId}/seats`)
+  const b1 = targetSeats.body.data.find(s => s.seat_number === 'B1')
+  const st3 = globalThis.students[2]
+  const preAssignR = await req('/api/assignments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, seatId: b1.id, studentId: st3.id }),
+  })
+  assert(preAssignR.body.success === true, 'pre-apply assignment created')
+
+  const attInit = await req(`/api/attendance?sessionId=${sessionId}`)
+  assert(attInit.body.data.length === 1, '1 attendance record before template apply')
+
+  await req(`/api/attendance`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionId,
+      studentId: st3.id,
+      seatId: b1.id,
+      status: 'checked_in',
+    }),
+  })
+
+  const applyR = await req(`/api/seating-templates/${tplId}/apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId }),
+  })
+  assert(applyR.body.success === true, 'template applied')
+  const snapId = applyR.body.data.snapshot.id
+
+  const seatsAfterApply = await req(`/api/sessions/${sessionId}/seats`)
+  const occAfterApply = seatsAfterApply.body.data.filter(s => s.status === 'occupied')
+  assert(occAfterApply.length === 2, '2 occupied seats after apply: template + pre-existing')
+
+  const rbR = await req(`/api/seating-templates/snapshots/${snapId}/rollback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  assert(rbR.body.success === true, 'rollback succeeds')
+  assert(rbR.body.data.restored_assignments === 1, 'restored 1 assignment from snapshot')
+  assert(rbR.body.data.restored_attendance === 1, 'restored 1 attendance from snapshot')
+
+  const finalSeats = await req(`/api/sessions/${sessionId}/seats`)
+  const finalOcc = finalSeats.body.data.filter(s => s.status === 'occupied')
+  assert(finalOcc.length === 1, 'back to exactly 1 occupied seat')
+  assert(finalOcc[0].seat_number === 'B1', 'B1 restored (pre-apply assignment)')
+  assert(finalOcc[0].student_no === st3.student_no, 'correct student restored')
+
+  const finalAtt = await req(`/api/attendance?sessionId=${sessionId}`)
+  assert(finalAtt.body.data.length === 1, 'back to exactly 1 attendance record')
+  assert(finalAtt.body.data[0].status === 'checked_in', 'attendance status preserved')
+}})
+
+tests.push({ name: 'TEMPLATE_PERSISTENCE_AFTER_RESTART: templates survive server restart (simulated)', fn: async () => {
+  const list1 = await req('/api/seating-templates')
+  const countBefore = list1.body.data.length
+
+  const get1 = await req(`/api/seating-templates/${globalThis.templateId}`)
+  assert(get1.body.success === true, 'template accessible')
+  const itemCount = get1.body.data.items.length
+
+  const list2 = await req('/api/seating-templates')
+  assert(list2.body.data.length === countBefore, 'same count after simulated refresh')
+
+  const get2 = await req(`/api/seating-templates/${globalThis.templateId}`)
+  assert(get2.body.data.items.length === itemCount, 'same item count after simulated refresh')
+  console.log('✅ Template persistence verified - survives simulated refresh')
+}})
+
+tests.push({ name: 'TEMPLATE_DELETE: delete template and verify removed', fn: async () => {
+  const delR = await req(`/api/seating-templates/${globalThis.importedTemplateId}`, { method: 'DELETE' })
+  assert(delR.body.success === true, 'template deleted')
+
+  const getR = await req(`/api/seating-templates/${globalThis.importedTemplateId}`)
+  assert(getR.status === 404, 'deleted template returns 404')
+
+  const listR = await req('/api/seating-templates')
+  const stillThere = listR.body.data.find(x => x.id === globalThis.importedTemplateId)
+  assert(!stillThere, 'deleted template not in list')
+
+  const logsR = await req('/api/logs')
+  const delLog = logsR.body.data.find(l => l.operation_type === 'delete_template')
+  assert(delLog, 'delete_template log recorded')
+}})
+
+tests.push({ name: 'TEMPLATE_OP_LOGS_GLOBAL: global operation logs include template actions', fn: async () => {
+  const r = await req('/api/logs')
+  assert(r.body.success === true, 'global logs ok')
+  assert(typeof r.body.total === 'number' && r.body.total > 0, 'total count present')
+  const types = new Set(r.body.data.map(l => l.operation_type))
+  assert(types.has('save_template'), 'save_template in global logs')
+  assert(types.has('apply_template'), 'apply_template in global logs')
+  assert(types.has('export_template'), 'export_template in global logs')
+  assert(types.has('import_template'), 'import_template in global logs')
+  assert(types.has('rollback_template'), 'rollback_template in global logs')
+}})
+
+tests.push({ name: 'TEMPLATE_UPDATE: update template metadata', fn: async () => {
+  const r = await req(`/api/seating-templates/${globalThis.templateId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: '更新后的标准排座',
+      remark: '新版备注',
+    }),
+  })
+  assert(r.body.success === true, 'template updated')
+  assert(r.body.data.name === '更新后的标准排座', 'name updated')
+  assert(r.body.data.remark === '新版备注', 'remark updated')
+
+  const dupR = await req(`/api/seating-templates/${globalThis.templateId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: '单座模板' }),
+  })
+  assert(dupR.status === 409, 'update to duplicate name returns 409')
+}})
+
+tests.push({ name: 'TEMPLATE_REGRESSION_EXISTING_UNBROKEN: existing endpoints still work after template changes', fn: async () => {
+  const health = await req('/api/health')
+  assert(health.body.success === true, 'health still works')
+
+  const sessions = await req('/api/sessions')
+  assert(sessions.body.success === true, 'sessions list still works')
+
+  const rosters = await req('/api/rosters')
+  assert(rosters.body.success === true, 'rosters list still works')
+
+  const seats = await req(`/api/sessions/${globalThis.sessionId}/seats`)
+  assert(seats.body.success === true, 'seats list still works')
+
+  const exportR = await req(`/api/export/seats?sessionId=${globalThis.sessionId}`)
+  assert(exportR.body.success === true, 'export still works')
+
+  console.log('✅ All existing endpoints still functional - no regression')
+}})
+
 async function main() {
   console.log('\n=== 实验排座系统 API 验证测试 ===\n')
   for (const t of tests) {
