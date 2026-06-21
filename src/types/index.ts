@@ -1,0 +1,103 @@
+export interface Session {
+  id: number
+  name: string
+  date: string
+  time_start: string
+  time_end: string
+  rows: number
+  cols: number
+  status: 'draft' | 'active' | 'completed'
+  roster_id: number | null
+  created_at: string
+  updated_at: string
+  occupied_count?: number
+  total_seats?: number
+  roster_name?: string
+}
+
+export interface Seat {
+  id: number
+  session_id: number
+  row_num: number
+  col_num: number
+  seat_number: string
+  status: 'free' | 'occupied'
+  student_id: number | null
+  student_name: string | null
+  student_no: string | null
+  class_name?: string | null
+  group_name?: string | null
+  assignment_id?: number | null
+  assigned_at?: string | null
+}
+
+export interface Roster {
+  id: number
+  name: string
+  student_count: number
+  inUse: boolean
+  created_at: string
+}
+
+export interface Student {
+  id: number
+  roster_id: number
+  student_no: string
+  name: string
+  class_name: string
+  group_name: string
+}
+
+export interface Assignment {
+  id: number
+  session_id: number
+  seat_id: number
+  student_id: number
+  student_no: string
+  student_name: string
+  seat_number: string
+  assigned_at: string
+}
+
+export interface SwapRequest {
+  id: number
+  session_id: number
+  from_student_id: number
+  to_student_id: number
+  from_seat_id: number
+  to_seat_id: number
+  from_student_no: string
+  from_student_name: string
+  to_student_no: string
+  to_student_name: string
+  from_seat_number: string
+  to_seat_number: string
+  reason: string
+  status: 'pending' | 'approved' | 'rejected'
+  approved_by: string | null
+  approval_role: 'admin' | 'ta' | null
+  approval_note: string | null
+  created_at: string
+  processed_at: string | null
+}
+
+export interface AttendanceRecord {
+  id: number
+  session_id: number
+  student_id: number
+  student_no: string
+  student_name: string
+  seat_number: string
+  status: 'not_checked_in' | 'checked_in' | 'late' | 'absent'
+  check_in_time: string | null
+}
+
+export interface OperationLog {
+  id: number
+  session_id: number
+  operation_type: string
+  operator: string
+  operator_role: 'admin' | 'ta'
+  details: string
+  created_at: string
+}
